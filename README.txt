@@ -39,3 +39,40 @@ index.html              komplette App
 manifest.webmanifest    PWA-Metadaten
 sw.js                   Offline-Cache
 icon-192.png / 512.png  App-Icons
+
+
+UPDATE V2 – TRAININGSHISTORIE
+- Im Bereich Training werden alle gespeicherten Trainingstage chronologisch angezeigt.
+- Pro Termin sieht man sofort: anwesend / abgesagt / unentschuldigt / offen.
+- Ein Tipp auf den Trainingstag öffnet die damalige komplette Anwesenheitsliste.
+- Änderungen an einer alten Anwesenheitsliste aktualisieren Historie und Spielerstatistik sofort.
+
+FÜR DIESES UPDATE AUF GITHUB:
+Nur index.html und sw.js müssen ersetzt werden.
+Die übrigen Dateien können unverändert bleiben.
+
+
+UPDATE V3
+1. Spielzeit & Einsatzstatistik
+   - Minuten pro Kaderspieler nach dem Spiel erfassen.
+   - Spielerprofil zeigt Kader, Startelf, Einwechslungen, Bank ohne Einsatz und Gesamtminuten.
+   - Gespeicherte Spiele können später wieder geladen und ergänzt werden.
+
+2. WhatsApp
+   - Kader/Startelf als Text kopieren.
+   - Trainingsspiel-Teams als Text kopieren.
+
+3. Trainingsplanung
+   - Offene Spielernotizen werden nach Kategorie und Priorität gebündelt.
+   - Die App schlägt den stärksten aktuellen Schwerpunkt vor.
+
+4. Anwesenheit
+   - Warnungen auf der Startseite.
+   - Trend über die letzten fünf erfassten Trainings in der Spielerliste und im Spielerprofil.
+
+5. 3-Team-Rotation
+   - A-B / B-C / A-C mit wechselnder Pause.
+   - Einstellbarer Countdown-Timer.
+
+UPDATE AUF GITHUB
+Für dieses Update index.html und sw.js ersetzen. Alle lokalen Daten bleiben erhalten.

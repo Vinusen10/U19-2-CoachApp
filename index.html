@@ -93,6 +93,14 @@
     .warning{background:#fff4e5;border:1px solid #f3c37a;border-radius:12px;padding:10px;font-size:13px}
     .success{background:#ecf9f0;border:1px solid #a9dbb8;border-radius:12px;padding:10px;font-size:13px}
     .empty{padding:24px;text-align:center;color:var(--muted)}
+    .trend-up{color:#0b6b3f}.trend-down{color:#9b2c24}.trend-flat{color:var(--muted)}
+    .warning-list{display:flex;flex-direction:column;gap:8px}
+    .warning-item{padding:10px 12px;border-radius:12px;background:#fff;border:1px solid var(--line)}
+    .warning-item.red{border-left:5px solid var(--red)}.warning-item.yellow{border-left:5px solid #d4a017}.warning-item.blue{border-left:5px solid var(--blue2)}
+    .timer-display{font-size:48px;font-weight:850;letter-spacing:1px;text-align:center;padding:12px 0}
+    .rotation-round{font-size:18px;font-weight:800;text-align:center}
+    .minutes-input{width:76px;padding:8px;text-align:center}
+    .plan-group{padding:10px 0;border-bottom:1px solid var(--line)}.plan-group:last-child{border-bottom:0}
   </style>
 </head>
 <body>
@@ -142,6 +150,16 @@
       </div>
 
       <div class="card mt16">
+        <div class="section-title"><h3>Anwesenheitswarnungen</h3><button class="btn small ghost" onclick="go('players')">Spieler</button></div>
+        <div id="attendanceWarnings"></div>
+      </div>
+
+      <div class="card mt16">
+        <div class="section-title"><h3>Trainingsplanung aus Notizen</h3><button class="btn small ghost" onclick="go('notes')">Details</button></div>
+        <div id="trainingPlanSummary"></div>
+      </div>
+
+      <div class="card mt16">
         <div class="section-title"><h3>Hohe Priorität</h3><button class="btn small ghost" onclick="go('notes')">Notizen</button></div>
         <div id="homePriority"></div>
       </div>
@@ -159,6 +177,13 @@
           <button class="btn small ghost" onclick="setAllTraining('open')">Alle offen</button>
         </div>
       </div>
+      <div class="card mt12">
+        <div class="section-title">
+          <h3>Trainingshistorie</h3>
+          <span class="tiny">Antippen zum Öffnen</span>
+        </div>
+        <div id="trainingHistory"></div>
+      </div>
       <div id="trainingList" class="mt12"></div>
     </section>
 
@@ -171,11 +196,26 @@
         </div>
         <div class="toolbar">
           <button class="btn primary" onclick="newTeamSeed()">Neu auslosen</button>
+          <button class="btn ghost" onclick="copyTeamsWhatsApp()">Für WhatsApp kopieren</button>
           <span class="chip">Seed <b id="seedLabel"></b></span>
         </div>
         <div id="secondaryOverrides" class="mt12"></div>
       </div>
       <div id="teamOutput" class="team-wrap mt12"></div>
+
+      <div class="card mt12 hidden" id="rotationCard">
+        <div class="section-title"><h3>3-Team-Rotation</h3><span class="chip" id="rotationRoundChip">Runde 1/3</span></div>
+        <div class="form-row">
+          <div><label>Spielzeit pro Runde (Min.)</label><input type="number" id="rotationMinutes" value="6" min="1" max="30" onchange="resetRotationTimer()"></div>
+          <div><label>Aktuelle Paarung</label><div class="rotation-round" id="rotationPairing">A – B · Pause C</div></div>
+        </div>
+        <div class="timer-display" id="rotationTimer">06:00</div>
+        <div class="toolbar" style="justify-content:center">
+          <button class="btn primary" id="rotationStartBtn" onclick="toggleRotationTimer()">Start</button>
+          <button class="btn ghost" onclick="resetRotationTimer()">Reset</button>
+          <button class="btn ghost" onclick="nextRotationRound()">Nächste Runde</button>
+        </div>
+      </div>
     </section>
 
     <section id="match" class="page">
@@ -196,7 +236,12 @@
         <div class="warning">Automatik: Trainingsbeteiligung = Anwesend / erfasste Trainings. Unentschuldigtes Fehlen ist Tie-Breaker. Die Formation sorgt dafür, dass die Startelf positionsgerecht bleibt. Du kannst anschließend alles manuell ändern.</div>
         <div class="toolbar mt12">
           <button class="btn primary" onclick="generateMatch()">Kader + Startelf automatisch</button>
+          <button class="btn ghost" onclick="copyMatchWhatsApp()">Für WhatsApp kopieren</button>
           <button class="btn ghost" onclick="saveCurrentMatch()">Speichern</button>
+        </div>
+        <div class="form-row mt12">
+          <div><label>Gespeichertes Spiel</label><select id="savedMatchSelect"></select></div>
+          <div><label>Aktion</label><button class="btn ghost block" onclick="loadSavedMatch()">Gespeichertes Spiel laden</button></div>
         </div>
       </div>
 
@@ -222,6 +267,15 @@
         <div class="section-title"><h3>Kader manuell anpassen</h3><span class="tiny">Kader / Startelf antippen</span></div>
         <div id="manualSquadList"></div>
       </div>
+
+      <div class="card mt12">
+        <div class="section-title"><h3>Spielzeit & Einsätze</h3><span class="tiny">nach dem Spiel erfassen</span></div>
+        <div class="form-row">
+          <div><label>Spieldauer (Min.)</label><input type="number" id="matchDuration" value="90" min="1" max="180"></div>
+          <div><label>Schnell vorbelegen</label><button class="btn ghost block" onclick="prefillMinutes()">Startelf voll · Bank 0</button></div>
+        </div>
+        <div id="minutesList"></div>
+      </div>
     </section>
 
     <section id="players" class="page">
@@ -233,6 +287,10 @@
     <section id="notes" class="page">
       <div class="section-title"><h1>Notizen</h1><button class="btn primary small" onclick="openNoteModal()">+ Notiz</button></div>
       <div class="card">
+        <div class="section-title"><h3>Trainingsplanung aus offenen Notizen</h3><span class="chip" id="planTopFocus">—</span></div>
+        <div id="trainingPlanning"></div>
+      </div>
+      <div class="card mt12">
         <div class="form-row">
           <div><label>Spieler</label><select id="noteFilterPlayer" onchange="renderNotes()"><option value="">Alle</option></select></div>
           <div><label>Status</label><select id="noteFilterDone" onchange="renderNotes()"><option value="">Alle</option><option value="open">Offen</option><option value="done">Erledigt</option></select></div>
@@ -322,13 +380,26 @@
 const INITIAL_PLAYERS = [{"id": 1, "name": "Lukas S.", "year": 2009, "primary": "TW", "secondary": "", "groupPrimary": "TW", "groupSecondary": ""}, {"id": 2, "name": "Julius", "year": 2011, "primary": "TW", "secondary": "", "groupPrimary": "TW", "groupSecondary": ""}, {"id": 3, "name": "Omar", "year": 2010, "primary": "IV", "secondary": "", "groupPrimary": "Verteidigung", "groupSecondary": ""}, {"id": 4, "name": "Leon", "year": 2009, "primary": "IV", "secondary": "", "groupPrimary": "Verteidigung", "groupSecondary": ""}, {"id": 5, "name": "Tim", "year": 2009, "primary": "IV", "secondary": "DM", "groupPrimary": "Verteidigung", "groupSecondary": "Mittelfeld"}, {"id": 6, "name": "Max P.", "year": 2010, "primary": "IV", "secondary": "DM", "groupPrimary": "Verteidigung", "groupSecondary": "Mittelfeld"}, {"id": 7, "name": "Anouar", "year": 2008, "primary": "IV", "secondary": "", "groupPrimary": "Verteidigung", "groupSecondary": ""}, {"id": 8, "name": "Thilo", "year": 2009, "primary": "LV", "secondary": "LM", "groupPrimary": "Verteidigung", "groupSecondary": "Mittelfeld"}, {"id": 9, "name": "Mika", "year": 2010, "primary": "LV", "secondary": "IV", "groupPrimary": "Verteidigung", "groupSecondary": "Verteidigung"}, {"id": 10, "name": "Phillip", "year": 2010, "primary": "RV", "secondary": "DM", "groupPrimary": "Verteidigung", "groupSecondary": "Mittelfeld"}, {"id": 11, "name": "Silas", "year": 2010, "primary": "RV", "secondary": "RM", "groupPrimary": "Verteidigung", "groupSecondary": "Mittelfeld"}, {"id": 12, "name": "Konrad", "year": 2010, "primary": "RV", "secondary": "", "groupPrimary": "Verteidigung", "groupSecondary": ""}, {"id": 13, "name": "Max H.", "year": 2009, "primary": "DM", "secondary": "", "groupPrimary": "Mittelfeld", "groupSecondary": ""}, {"id": 14, "name": "Neo", "year": 2010, "primary": "DM", "secondary": "OM", "groupPrimary": "Mittelfeld", "groupSecondary": "Mittelfeld"}, {"id": 15, "name": "Elias", "year": 2010, "primary": "OM", "secondary": "DM", "groupPrimary": "Mittelfeld", "groupSecondary": "Mittelfeld"}, {"id": 16, "name": "Dominik", "year": 2009, "primary": "LF", "secondary": "RF", "groupPrimary": "Sturm", "groupSecondary": "Sturm"}, {"id": 17, "name": "Till", "year": 2009, "primary": "RF", "secondary": "", "groupPrimary": "Sturm", "groupSecondary": ""}, {"id": 18, "name": "Justus", "year": 2010, "primary": "ST", "secondary": "LF", "groupPrimary": "Sturm", "groupSecondary": "Sturm"}, {"id": 19, "name": "Moritz", "year": 2010, "primary": "ST", "secondary": "", "groupPrimary": "Sturm", "groupSecondary": ""}, {"id": 20, "name": "Veli", "year": 2009, "primary": "ST", "secondary": "", "groupPrimary": "Sturm", "groupSecondary": ""}, {"id": 21, "name": "Ben", "year": 2010, "primary": "ST", "secondary": "OM", "groupPrimary": "Sturm", "groupSecondary": "Mittelfeld"}, {"id": 22, "name": "Lutalo", "year": 2010, "primary": "OM", "secondary": "DM", "groupPrimary": "Mittelfeld", "groupSecondary": "Mittelfeld"}];
 const KEY='u19trainer_v1';
 let currentTrainingId=null, currentPlayerId=null, teamSeed=1;
-let matchState={available:{},squad:[],starters:[]};
+let matchState={available:{},squad:[],starters:[],minutes:{}};
+let lastGeneratedTeams=[];
+let rotationState={round:0,remaining:360,running:false,timer:null};
 
 function baseDb(){
-  return {version:1,players:INITIAL_PLAYERS.map(p=>({...p,active:true,strength:'',development:'',focus:''})),trainings:[],notes:[],matches:[],teamOverrides:{},lastBackup:null};
+  return {version:3,players:INITIAL_PLAYERS.map(p=>({...p,active:true,strength:'',development:'',focus:''})),trainings:[],notes:[],matches:[],teamOverrides:{},lastBackup:null};
+}
+function migrateDb(data){
+  const d=data&&typeof data==='object'?data:baseDb();
+  d.players=Array.isArray(d.players)?d.players:INITIAL_PLAYERS.map(p=>({...p,active:true,strength:'',development:'',focus:''}));
+  d.trainings=Array.isArray(d.trainings)?d.trainings:[];
+  d.notes=Array.isArray(d.notes)?d.notes:[];
+  d.matches=Array.isArray(d.matches)?d.matches:[];
+  d.teamOverrides=d.teamOverrides||{};
+  d.players.forEach(p=>{if(p.active===undefined)p.active=true;if(p.strength===undefined)p.strength='';if(p.development===undefined)p.development='';if(p.focus===undefined)p.focus=''});
+  d.version=3;
+  return d;
 }
 let db=loadDb();
-function loadDb(){try{const x=localStorage.getItem(KEY);return x?JSON.parse(x):baseDb()}catch(e){return baseDb()}}
+function loadDb(){try{const x=localStorage.getItem(KEY);return migrateDb(x?JSON.parse(x):baseDb())}catch(e){return baseDb()}}
 function saveDb(){localStorage.setItem(KEY,JSON.stringify(db));renderHome()}
 function uid(prefix='id'){return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7)}
 function today(){return new Date().toISOString().slice(0,10)}
@@ -366,6 +437,48 @@ function compareParticipation(a,b){
   if(B.present!==A.present)return B.present-A.present;
   return a.name.localeCompare(b.name,'de');
 }
+function recentTrainingStats(id,limit=5){
+  const items=[...db.trainings].sort((a,b)=>b.date.localeCompare(a.date))
+    .map(t=>({date:t.date,status:t.status?.[id]}))
+    .filter(x=>x.status&&x.status!=='open')
+    .slice(0,limit);
+  const present=items.filter(x=>x.status==='present').length;
+  return {total:items.length,present,rate:items.length?present/items.length:0,items};
+}
+function playerTrend(id){
+  const season=pStats(id),recent=recentTrainingStats(id,5);
+  if(recent.total<2)return {label:'—',cls:'trend-flat',delta:0,rate:recent.rate};
+  const delta=recent.rate-season.rate;
+  if(delta>=0.10)return {label:'↗',cls:'trend-up',delta,rate:recent.rate};
+  if(delta<=-0.10)return {label:'↘',cls:'trend-down',delta,rate:recent.rate};
+  return {label:'→',cls:'trend-flat',delta,rate:recent.rate};
+}
+function matchStats(id){
+  let squad=0,starts=0,subs=0,benchUnused=0,minutes=0;
+  db.matches.forEach(m=>{
+    if(m.squad?.includes(id))squad++;
+    if(m.starters?.includes(id))starts++;
+    const hasMinutes=m.minutes && Object.prototype.hasOwnProperty.call(m.minutes,String(id));
+    const mins=hasMinutes?Number(m.minutes[id]||0):0;
+    minutes+=mins;
+    if(hasMinutes && m.squad?.includes(id) && !m.starters?.includes(id) && mins>0)subs++;
+    if(hasMinutes && m.squad?.includes(id) && !m.starters?.includes(id) && mins===0)benchUnused++;
+  });
+  return {squad,starts,subs,benchUnused,minutes};
+}
+function attendanceWarningItems(){
+  const warnings=[];
+  activePlayers().forEach(p=>{
+    const s=pStats(p.id),recent=recentTrainingStats(p.id,5),trend=playerTrend(p.id);
+    const last3=[...db.trainings].sort((a,b)=>b.date.localeCompare(a.date)).map(t=>t.status?.[p.id]).filter(x=>x&&x!=='open').slice(0,3);
+    const unexcRecent=recent.items.filter(x=>x.status==='unexcused').length;
+    if(unexcRecent>=2)warnings.push({level:'red',text:`${p.name}: ${unexcRecent}× unentschuldigt in den letzten ${recent.total} Trainings`});
+    else if(last3.length===3 && last3.every(x=>x!=='present'))warnings.push({level:'red',text:`${p.name}: 3 Trainings in Folge nicht anwesend`});
+    else if(s.total>=3 && s.rate<0.60)warnings.push({level:'yellow',text:`${p.name}: Saisonbeteiligung nur ${Math.round(s.rate*100)} %`});
+    else if(recent.total>=3 && trend.delta<=-0.20)warnings.push({level:'blue',text:`${p.name}: Beteiligung zuletzt deutlich gesunken (${Math.round(recent.rate*100)} % letzte ${recent.total})`});
+  });
+  return warnings;
+}
 
 function renderHome(){
   document.getElementById('todayChip').textContent=fmtDate(today());
@@ -379,18 +492,56 @@ function renderHome(){
   }).join(''):'<div class="empty">Noch keine Trainings erfasst.</div>';
   const high=db.notes.filter(n=>!n.done&&n.priority==='high').slice(0,4);
   document.getElementById('homePriority').innerHTML=high.length?high.map(noteHtml).join(''):'<div class="empty">Keine offenen Notizen mit hoher Priorität.</div>';
+  const warnings=attendanceWarningItems();
+  document.getElementById('attendanceWarnings').innerHTML=warnings.length?`<div class="warning-list">${warnings.slice(0,8).map(w=>`<div class="warning-item ${w.level}">${esc(w.text)}</div>`).join('')}</div>`:'<div class="success">Aktuell keine auffälligen Anwesenheitswerte.</div>';
+  document.getElementById('trainingPlanSummary').innerHTML=trainingPlanHtml(true);
 }
 
+function trainingCounts(t){
+  const counts={present:0,excused:0,unexcused:0,open:0};
+  activePlayers().forEach(p=>counts[t?.status?.[p.id]||'open']++);
+  return counts;
+}
+function renderTrainingHistory(){
+  const el=document.getElementById('trainingHistory');
+  if(!el)return;
+  const list=[...db.trainings].sort((a,b)=>b.date.localeCompare(a.date));
+  if(!list.length){el.innerHTML='<div class="empty">Noch keine Trainings gespeichert.</div>';return}
+  el.innerHTML=list.map(t=>{
+    const c=trainingCounts(t);
+    const selected=t.id===currentTrainingId;
+    return `<button class="player-row ${selected?'history-selected':''}" style="width:100%;text-align:left;border:${selected?'2px solid #7aa2e3':'1px solid var(--line)'}" onclick="openTrainingFromHistory('${t.id}')">
+      <div class="player-head">
+        <div>
+          <div class="player-name">${fmtDate(t.date)}</div>
+          <div class="meta">${c.present} anwesend · ${c.excused} abgesagt · ${c.unexcused} unentschuldigt${c.open?' · '+c.open+' offen':''}</div>
+        </div>
+        <span class="chip">${c.present}/${activePlayers().length}</span>
+      </div>
+    </button>`
+  }).join('');
+}
+function openTrainingFromHistory(id){
+  const t=db.trainings.find(x=>x.id===id);if(!t)return;
+  currentTrainingId=t.id;
+  document.getElementById('trainingDate').value=t.date;
+  renderTrainingList();
+  renderTrainingHistory();
+  setTimeout(()=>document.getElementById('trainingList')?.scrollIntoView({behavior:'smooth',block:'start'}),50);
+}
 function renderTrainingPage(){
   if(!document.getElementById('trainingDate').value)document.getElementById('trainingDate').value=today();
   if(!currentTrainingId && db.trainings.length){currentTrainingId=db.trainings.slice().sort((a,b)=>b.date.localeCompare(a.date))[0].id}
+  renderTrainingHistory();
   renderTrainingList();
 }
 function loadTraining(){
   const date=document.getElementById('trainingDate').value;if(!date)return;
   let t=db.trainings.find(x=>x.date===date);
   if(!t){t={id:uid('tr'),date,status:{}};activePlayers().forEach(p=>t.status[p.id]='open');db.trainings.push(t);saveDb()}
-  currentTrainingId=t.id;renderTrainingList();
+  currentTrainingId=t.id;
+  renderTrainingHistory();
+  renderTrainingList();
 }
 function currentTraining(){return db.trainings.find(t=>t.id===currentTrainingId)}
 function renderTrainingList(){
@@ -398,7 +549,7 @@ function renderTrainingList(){
   const el=document.getElementById('trainingList');
   if(!t){el.innerHTML='<div class="card empty">Datum wählen und „Training laden / anlegen“ tippen.</div>';document.getElementById('trainingSummary').textContent='kein Training';return}
   document.getElementById('trainingDate').value=t.date;
-  const counts={present:0,excused:0,unexcused:0,open:0};activePlayers().forEach(p=>counts[t.status[p.id]||'open']++);
+  const counts=trainingCounts(t);
   document.getElementById('trainingSummary').textContent=`${counts.present} da · ${counts.excused} abgesagt · ${counts.unexcused} fehlt`;
   el.innerHTML=activePlayers().map(p=>{
     const s=t.status[p.id]||'open';
@@ -411,8 +562,14 @@ function renderTrainingList(){
     </div></div>`
   }).join('');
 }
-function setTrainingStatus(id,status){const t=currentTraining();if(!t)return;t.status[id]=status;saveDb();renderTrainingList()}
-function setAllTraining(status){const t=currentTraining();if(!t)return;activePlayers().forEach(p=>t.status[p.id]=status);saveDb();renderTrainingList()}
+function setTrainingStatus(id,status){
+  const t=currentTraining();if(!t)return;
+  t.status[id]=status;saveDb();renderTrainingList();renderTrainingHistory();
+}
+function setAllTraining(status){
+  const t=currentTraining();if(!t)return;
+  activePlayers().forEach(p=>t.status[p.id]=status);saveDb();renderTrainingList();renderTrainingHistory();
+}
 
 function renderTeamPage(){
   const sel=document.getElementById('teamTraining');
@@ -457,8 +614,59 @@ function renderTeams(){
     return `<div class="player-head mt8"><div><b>${esc(p.name)}</b><div class="tiny">${p.primary} / ${p.secondary}</div></div><select style="width:150px" onchange="setTeamOverride('${trId}',${p.id},this.value)"><option value="primary" ${v==='primary'?'selected':''}>Primär (${p.primary})</option><option value="secondary" ${v==='secondary'?'selected':''}>Sekundär (${p.secondary})</option></select></div>`
   }).join('')}`:'';
   const teams=buildBalancedTeams(present,count,trId,teamSeed);
+  lastGeneratedTeams=teams;
   const names=['A','B','C'],cls=['a','b','c'];
   document.getElementById('teamOutput').innerHTML=teams.map((tm,i)=>`<div class="team-card ${cls[i]}"><h3>Team ${names[i]} <span class="chip">${tm.players.length}</span></h3><div class="tiny">TW ${tm.groups.TW} · V ${tm.groups.Verteidigung} · M ${tm.groups.Mittelfeld} · S ${tm.groups.Sturm}</div><div class="mt8">${tm.players.map(p=>{const r=roleFor(p,trId);return `<div class="team-player"><div><b>${esc(p.name)}</b><div class="role">${r.group}</div></div><span class="chip">${r.pos}</span></div>`}).join('')}</div></div>`).join('');
+  document.getElementById('rotationCard').classList.toggle('hidden',count!==3);
+  if(count===3)renderRotation();
+}
+function copyText(text){
+  if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(text).then(()=>alert('In die Zwischenablage kopiert.'));
+  const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('In die Zwischenablage kopiert.');return Promise.resolve();
+}
+function copyTeamsWhatsApp(){
+  const trId=document.getElementById('teamTraining').value,t=db.trainings.find(x=>x.id===trId);
+  if(!lastGeneratedTeams.length)return alert('Erst Teams erstellen.');
+  const names=['A','B','C'];
+  const lines=[`⚽ Trainingsspiele ${t?fmtDate(t.date):''}`,''];
+  lastGeneratedTeams.forEach((tm,i)=>{
+    lines.push(`*Team ${names[i]}*`);
+    tm.players.forEach(p=>{const r=roleFor(p,trId);lines.push(`• ${p.name} (${r.pos})`)});
+    lines.push('');
+  });
+  copyText(lines.join('\n'));
+}
+function rotationSeconds(){return Math.max(1,Number(document.getElementById('rotationMinutes')?.value||6))*60}
+function renderRotation(){
+  const rounds=[['A','B','C'],['B','C','A'],['A','C','B']];
+  const r=rounds[rotationState.round]||rounds[0];
+  document.getElementById('rotationRoundChip').textContent=`Runde ${rotationState.round+1}/3`;
+  document.getElementById('rotationPairing').textContent=`${r[0]} – ${r[1]} · Pause ${r[2]}`;
+  const min=Math.floor(rotationState.remaining/60),sec=rotationState.remaining%60;
+  document.getElementById('rotationTimer').textContent=`${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  document.getElementById('rotationStartBtn').textContent=rotationState.running?'Pause':'Start';
+}
+function toggleRotationTimer(){
+  if(rotationState.running){clearInterval(rotationState.timer);rotationState.running=false;renderRotation();return}
+  if(rotationState.remaining<=0)rotationState.remaining=rotationSeconds();
+  rotationState.running=true;
+  rotationState.timer=setInterval(()=>{
+    rotationState.remaining--;
+    if(rotationState.remaining<=0){
+      rotationState.remaining=0;clearInterval(rotationState.timer);rotationState.running=false;
+      if(navigator.vibrate)navigator.vibrate([200,100,200]);
+    }
+    renderRotation();
+  },1000);
+  renderRotation();
+}
+function resetRotationTimer(){
+  if(rotationState.timer)clearInterval(rotationState.timer);
+  rotationState.running=false;rotationState.remaining=rotationSeconds();renderRotation();
+}
+function nextRotationRound(){
+  if(rotationState.timer)clearInterval(rotationState.timer);
+  rotationState.running=false;rotationState.round=(rotationState.round+1)%3;rotationState.remaining=rotationSeconds();renderRotation();
 }
 function setTeamOverride(trId,pid,val){db.teamOverrides[trId]=db.teamOverrides[trId]||{};db.teamOverrides[trId][pid]=val;saveDb();renderTeams()}
 function newTeamSeed(){teamSeed=(teamSeed%99)+1;renderTeams()}
@@ -469,7 +677,8 @@ function renderPlayers(){
   const list=activePlayers().filter(p=>p.name.toLowerCase().includes(q));
   document.getElementById('playersList').innerHTML=list.map(p=>{
     const s=pStats(p.id),pct=Math.round(s.rate*100);
-    return `<div class="player-row" onclick="openPlayer(${p.id})"><div class="player-head"><div><div class="player-name">${esc(p.name)}</div><div class="meta">${p.year} · ${p.primary}${p.secondary?' / '+p.secondary:''}</div></div><div style="text-align:right"><b>${pct}%</b><div class="tiny">${s.present}/${s.total} Trainings</div></div></div><div class="progress mt8"><i style="width:${pct}%"></i></div></div>`
+    const tr=playerTrend(p.id),recent=recentTrainingStats(p.id,5);
+    return `<div class="player-row" onclick="openPlayer(${p.id})"><div class="player-head"><div><div class="player-name">${esc(p.name)}</div><div class="meta">${p.year} · ${p.primary}${p.secondary?' / '+p.secondary:''}</div></div><div style="text-align:right"><b>${pct}%</b><div class="tiny ${tr.cls}">${tr.label} letzte ${recent.total||0}: ${recent.total?Math.round(recent.rate*100)+' %':'—'}</div></div></div><div class="progress mt8"><i style="width:${pct}%"></i></div></div>`
   }).join('');
 }
 function openPlayer(id){
@@ -482,8 +691,8 @@ function openPlayer(id){
   document.getElementById('pmStrength').value=p.strength||'';
   document.getElementById('pmDevelopment').value=p.development||'';
   document.getElementById('pmFocus').value=p.focus||'';
-  const m=db.matches.filter(m=>m.squad?.includes(id)).length, xi=db.matches.filter(m=>m.starters?.includes(id)).length;
-  document.getElementById('pmStats').innerHTML=`<div class="grid two"><div><b>Training</b><p>${s.total} erfasst<br>${s.present} anwesend<br>${s.excused} abgesagt<br>${s.unexcused} unentschuldigt</p></div><div><b>Spieltage</b><p>${m}× im Kader<br>${xi}× Startelf</p></div></div>`;
+  const ms=matchStats(id),tr=playerTrend(id),recent=recentTrainingStats(id,5);
+  document.getElementById('pmStats').innerHTML=`<div class="grid two"><div><b>Training</b><p>${s.total} erfasst<br>${s.present} anwesend<br>${s.excused} abgesagt<br>${s.unexcused} unentschuldigt<br><span class="${tr.cls}">${tr.label} letzte ${recent.total}: ${recent.total?Math.round(recent.rate*100)+' %':'—'}</span></p></div><div><b>Einsätze</b><p>${ms.squad}× im Kader<br>${ms.starts}× Startelf<br>${ms.subs}× eingewechselt<br>${ms.benchUnused}× Bank ohne Einsatz<br><b>${ms.minutes} Minuten</b></p></div></div>`;
   renderPlayerNotes();
   document.getElementById('playerModal').classList.add('open');
 }
@@ -506,12 +715,40 @@ function noteHtml(n){
   const p=getPlayer(n.playerId);return `<div class="note ${n.priority}"><div class="player-head"><div><b>${esc(p?.name||'Spieler')}</b> · ${esc(n.category)}</div><span class="chip ${n.done?'green':''}">${n.done?'Erledigt':n.priority==='high'?'Hoch':n.priority==='medium'?'Mittel':'Niedrig'}</span></div><div class="mt8">${esc(n.text||'')}</div>${n.action?`<div class="tiny mt8"><b>Training:</b> ${esc(n.action)}</div>`:''}<div class="toolbar mt8"><button class="btn small ghost" onclick="toggleNote('${n.id}')">${n.done?'Wieder öffnen':'Erledigt'}</button><span class="tiny">${fmtDate(n.date)}</span></div></div>`
 }
 function toggleNote(id){const n=db.notes.find(x=>x.id===id);n.done=!n.done;saveDb();renderNotes();if(currentPlayerId)renderPlayerNotes()}
+function trainingPlanData(){
+  const open=db.notes.filter(n=>!n.done);
+  const weights={high:3,medium:2,low:1},cats={};
+  open.forEach(n=>{
+    const c=n.category||'Allgemein';
+    cats[c]=cats[c]||{score:0,count:0,players:new Set(),actions:[]};
+    cats[c].score+=weights[n.priority]||1;cats[c].count++;cats[c].players.add(n.playerId);
+    if(n.action?.trim())cats[c].actions.push(n.action.trim());
+  });
+  const ranked=Object.entries(cats).map(([category,v])=>({category,...v,players:[...v.players]})).sort((a,b)=>b.score-a.score||b.count-a.count);
+  return {ranked,open};
+}
+function trainingPlanHtml(compact=false){
+  const data=trainingPlanData();
+  if(!data.ranked.length)return '<div class="empty">Keine offenen Notizen – aktuell kein Schwerpunkt ableitbar.</div>';
+  const top=data.ranked[0];
+  const rows=data.ranked.slice(0,compact?3:6).map(x=>{
+    const names=x.players.map(id=>getPlayer(id)?.name).filter(Boolean);
+    const actions=[...new Set(x.actions)].slice(0,compact?1:3);
+    return `<div class="plan-group"><div class="player-head"><b>${esc(x.category)}</b><span class="chip">${x.count} Notiz${x.count===1?'':'en'}</span></div><div class="tiny mt8">${esc(names.join(', '))}</div>${actions.length?`<div class="mt8">${actions.map(a=>`• ${esc(a)}`).join('<br>')}</div>`:''}</div>`;
+  }).join('');
+  return `<div class="success"><b>Empfohlener Schwerpunkt:</b> ${esc(top.category)}</div>${rows}`;
+}
+function renderTrainingPlanning(){
+  const el=document.getElementById('trainingPlanning');if(el)el.innerHTML=trainingPlanHtml(false);
+  const data=trainingPlanData();const chip=document.getElementById('planTopFocus');if(chip)chip.textContent=data.ranked[0]?.category||'—';
+}
 function renderNotes(){
   fillPlayerSelects();const pid=Number(document.getElementById('noteFilterPlayer')?.value||0),done=document.getElementById('noteFilterDone')?.value||'';
   let list=[...db.notes].sort((a,b)=>b.date.localeCompare(a.date));
   if(pid)list=list.filter(n=>n.playerId===pid);
   if(done==='open')list=list.filter(n=>!n.done);if(done==='done')list=list.filter(n=>n.done);
   document.getElementById('notesList').innerHTML=list.length?list.map(noteHtml).join(''):'<div class="card empty">Keine passenden Notizen.</div>';
+  renderTrainingPlanning();
 }
 
 const FORMATIONS={
@@ -521,9 +758,25 @@ const FORMATIONS={
  '3-5-2':{TW:1,Verteidigung:3,Mittelfeld:5,Sturm:2},
  '4-3-3':{TW:1,Verteidigung:4,Mittelfeld:3,Sturm:3}
 };
+function renderSavedMatchSelect(){
+  const sel=document.getElementById('savedMatchSelect');if(!sel)return;
+  const sorted=[...db.matches].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  sel.innerHTML=sorted.length?sorted.map(m=>`<option value="${m.id}">${fmtDate(m.date)} · ${esc(m.opponent||'ohne Gegner')}</option>`).join(''):'<option value="">Noch keine Spiele gespeichert</option>';
+}
 function renderMatchPage(){
   if(!document.getElementById('matchDate').value)document.getElementById('matchDate').value=today();
   if(!Object.keys(matchState.available).length)activePlayers().forEach(p=>matchState.available[p.id]=true);
+  renderSavedMatchSelect();renderAvailability();renderMatchLists();
+}
+function loadSavedMatch(){
+  const id=document.getElementById('savedMatchSelect').value,m=db.matches.find(x=>x.id===id);if(!m)return;
+  document.getElementById('matchDate').value=m.date||today();
+  document.getElementById('matchOpponent').value=m.opponent||'';
+  document.getElementById('formation').value=m.formation||'5-4-1';
+  document.getElementById('squadSize').value=m.squadSize||16;
+  document.getElementById('matchDuration').value=m.duration||90;
+  matchState.available={};activePlayers().forEach(p=>matchState.available[p.id]=(m.available||[]).includes(p.id));
+  matchState.squad=[...(m.squad||[])];matchState.starters=[...(m.starters||[])];matchState.minutes={...(m.minutes||{})};
   renderAvailability();renderMatchLists();
 }
 function setAllAvailable(v){activePlayers().forEach(p=>matchState.available[p.id]=v);renderAvailability()}
@@ -562,7 +815,7 @@ function generateMatch(){
     if(backupGK){squad.push(backupGK.id);pool=pool.filter(x=>x.id!==backupGK.id)}
   }
   pool.sort(compareParticipation).forEach(p=>{if(squad.length<size)squad.push(p.id)});
-  matchState.starters=starters.slice(0,11);matchState.squad=squad;
+  matchState.starters=starters.slice(0,11);matchState.squad=squad;matchState.minutes={};
   renderMatchLists()
 }
 function renderMatchLists(){
@@ -577,7 +830,28 @@ function renderMatchLists(){
   }).join('');
   const warns=[];if(xi.length!==11&&matchState.squad.length)warns.push(`Startelf hat ${xi.length} statt 11 Spieler.`);
   if(matchState.squad.length>Number(document.getElementById('squadSize').value||16))warns.push('Kader ist größer als die eingestellte Kadergröße.');
-  document.getElementById('matchWarnings').innerHTML=warns.map(x=>`<div class="warning">${x}</div>`).join('')
+  document.getElementById('matchWarnings').innerHTML=warns.map(x=>`<div class="warning">${x}</div>`).join('');
+  renderMinutesList();
+}
+function renderMinutesList(){
+  const el=document.getElementById('minutesList');if(!el)return;
+  const players=matchState.squad.map(getPlayer).filter(Boolean);
+  el.innerHTML=players.length?players.map(p=>{
+    const starter=matchState.starters.includes(p.id),mins=matchState.minutes?.[p.id] ?? '';
+    return `<div class="match-player"><div><b>${esc(p.name)}</b><div class="tiny">${starter?'Startelf':'Bank'} · ${p.primary}${p.secondary?' / '+p.secondary:''}</div></div><input class="minutes-input" type="number" min="0" max="180" placeholder="Min." value="${mins}" onchange="setPlayerMinutes(${p.id},this.value)"><span class="tiny">Min.</span></div>`
+  }).join(''):'<div class="empty">Erst einen Kader erstellen.</div>';
+}
+function setPlayerMinutes(id,val){matchState.minutes=matchState.minutes||{};matchState.minutes[id]=Math.max(0,Number(val||0))}
+function prefillMinutes(){
+  const duration=Math.max(1,Number(document.getElementById('matchDuration').value||90));
+  matchState.minutes={};matchState.squad.forEach(id=>matchState.minutes[id]=matchState.starters.includes(id)?duration:0);renderMinutesList();
+}
+function copyMatchWhatsApp(){
+  if(!matchState.squad.length)return alert('Erst einen Kader erstellen.');
+  const date=fmtDate(document.getElementById('matchDate').value),opp=document.getElementById('matchOpponent').value.trim()||'Gegner',formation=document.getElementById('formation').value;
+  const xi=matchState.starters.map(getPlayer).filter(Boolean),bench=matchState.squad.filter(id=>!matchState.starters.includes(id)).map(getPlayer).filter(Boolean);
+  const lines=[`⚽ *Kader ${date} gegen ${opp}*`,`Formation: ${formation}`,'',`*Startelf*`,...xi.map(p=>`• ${p.name} (${p.primary})`),'',`*Bank*`,...bench.map(p=>`• ${p.name} (${p.primary})`)];
+  copyText(lines.join('\n'));
 }
 function toggleSquad(id){
   if(matchState.squad.includes(id)){matchState.squad=matchState.squad.filter(x=>x!==id);matchState.starters=matchState.starters.filter(x=>x!==id)}
@@ -591,11 +865,11 @@ function toggleStarter(id){
   renderMatchLists()
 }
 function saveCurrentMatch(){
-  const date=document.getElementById('matchDate').value||today(),opp=document.getElementById('matchOpponent').value.trim(),formation=document.getElementById('formation').value,squadSize=Number(document.getElementById('squadSize').value||16);
+  const date=document.getElementById('matchDate').value||today(),opp=document.getElementById('matchOpponent').value.trim(),formation=document.getElementById('formation').value,squadSize=Number(document.getElementById('squadSize').value||16),duration=Math.max(1,Number(document.getElementById('matchDuration').value||90));
   let m=db.matches.find(x=>x.date===date&&x.opponent===opp);
   if(!m){m={id:uid('match')};db.matches.push(m)}
-  Object.assign(m,{date,opponent:opp,formation,squadSize,available:Object.keys(matchState.available).filter(id=>matchState.available[id]).map(Number),squad:[...matchState.squad],starters:[...matchState.starters]});
-  saveDb();alert('Spieltag gespeichert.')
+  Object.assign(m,{date,opponent:opp,formation,squadSize,duration,available:Object.keys(matchState.available).filter(id=>matchState.available[id]).map(Number),squad:[...matchState.squad],starters:[...matchState.starters],minutes:{...(matchState.minutes||{})}});
+  saveDb();renderSavedMatchSelect();alert('Spieltag inklusive Einsatzdaten gespeichert.')
 }
 
 function renderBackup(){document.getElementById('lastBackup').textContent=db.lastBackup?`Letztes Backup: ${new Date(db.lastBackup).toLocaleString('de-DE')}`:'Noch kein Backup exportiert.'}
@@ -610,8 +884,8 @@ function importBackup(ev){
 function init(){
   document.getElementById('trainingDate').value=today();
   document.getElementById('matchDate').value=today();
-  fillPlayerSelects();renderHome();
-  if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  fillPlayerSelects();renderHome();rotationState.remaining=rotationSeconds();
+  if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).catch(()=>{});
 }
 init();
 </script>
