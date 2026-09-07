@@ -1,5 +1,5 @@
 // Bei jedem Deploy diese Versionsnummer erhöhen, damit Clients den neuen Cache laden.
-const CACHE_VERSION = 'u19-trainer-v2';
+const CACHE_VERSION = 'u19-trainer-v5';
 const CORE_ASSETS = [
   './',
   './index.html',
