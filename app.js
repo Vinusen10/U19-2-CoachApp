@@ -8,7 +8,7 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -18,6 +18,8 @@ const GROUP_ORDER = ['TW','DEF','MID','FWD'];
 const CATEGORIES = ['Technik','Taktik','Fitness','Zweikampf','Mentalität','Verhalten','Position','Allgemein'];
 const PRIORITIES = ['Hoch','Mittel','Niedrig'];
 const PRIORITY_WEIGHT = { Hoch: 3, Mittel: 2, Niedrig: 1 };
+
+const MONTH_NAMES = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
 
 const STATUS = {
   anwesend:       { label: 'Da',            cls: 'st-da' },
@@ -96,6 +98,68 @@ const FORMATIONS = {
 };
 const FORMATION_NAMES = Object.keys(FORMATIONS);
 
+/* ------------------------------- Avatare -------------------------------- */
+
+const SKIN_TONES = ['#ffe0bd','#f1c27d','#e0ac69','#c68642','#8d5524','#5c3a21'];
+const HAIR_COLORS = ['#2b2b2b','#4b3621','#8a5a2b','#c9a24b','#a52a2a','#e8e8e8','#1e3a8a'];
+const HAIR_SHAPES = ['bald','short','curly','long','mohawk'];
+const FACE_SHAPES = ['round','oval','square'];
+const HAIR_SHAPE_LABEL = { bald:'Kahl', short:'Kurz', curly:'Lockig', long:'Lang', mohawk:'Irokese' };
+const FACE_SHAPE_LABEL = { round:'Rund', oval:'Oval', square:'Eckig' };
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+function defaultAvatarFor(id) {
+  const h = hashStr(String(id));
+  return {
+    skin: SKIN_TONES[h % SKIN_TONES.length],
+    hair: HAIR_COLORS[Math.floor(h / 7) % HAIR_COLORS.length],
+    hairShape: HAIR_SHAPES[Math.floor(h / 49) % HAIR_SHAPES.length],
+    faceShape: FACE_SHAPES[Math.floor(h / 245) % FACE_SHAPES.length],
+  };
+}
+
+function faceShapeSVG(shape, skin) {
+  if (shape === 'oval') return `<ellipse cx="50" cy="55" rx="30" ry="40" fill="${skin}"/>`;
+  if (shape === 'square') return `<rect x="17" y="19" width="66" height="70" rx="20" fill="${skin}"/>`;
+  return `<circle cx="50" cy="55" r="36" fill="${skin}"/>`; // round (Standard)
+}
+
+function hairShapeSVG(shape, hair) {
+  switch (shape) {
+    case 'bald': return '';
+    case 'curly': return `<g fill="${hair}">
+        <circle cx="22" cy="38" r="11"/><circle cx="38" cy="23" r="12"/><circle cx="50" cy="17" r="12"/>
+        <circle cx="62" cy="23" r="12"/><circle cx="78" cy="38" r="11"/><circle cx="50" cy="30" r="17"/>
+      </g>`;
+    case 'long': return `<path d="M14,50 Q50,4 86,50 L86,80 Q78,58 78,50 L78,88 Q69,64 69,50 L31,50 Q31,64 22,88 L22,50 Q14,58 14,80 Z" fill="${hair}"/>`;
+    case 'mohawk': return `<path d="M44,4 L56,4 L59,42 L41,42 Z" fill="${hair}"/><path d="M14,48 Q50,30 86,48 Q86,32 50,26 Q14,32 14,48 Z" fill="${hair}" opacity="0.0"/>`;
+    case 'short':
+    default: return `<path d="M14,48 Q50,6 86,48 Q86,26 50,16 Q14,26 14,48 Z" fill="${hair}"/>`;
+  }
+}
+
+function avatarSVG(avatar, size) {
+  size = size || 44;
+  avatar = avatar || {};
+  const skin = avatar.skin || '#f1c27d';
+  const hair = avatar.hair || '#2b2b2b';
+  const face = faceShapeSVG(avatar.faceShape || 'round', skin);
+  const hairSvg = hairShapeSVG(avatar.hairShape || 'short', hair);
+  return `<svg viewBox="0 0 100 100" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="50" cy="50" r="49" fill="#eaf1ff"/>
+    ${face}
+    <circle cx="38" cy="56" r="3.2" fill="#1f2937"/>
+    <circle cx="62" cy="56" r="3.2" fill="#1f2937"/>
+    <path d="M40,70 Q50,76 60,70" stroke="#7a4b32" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    ${hairSvg}
+  </svg>`;
+}
+
 const SEED_PLAYERS = [
   ['p1','Lukas S.',2009,'TW',null],
   ['p2','Julius',2011,'TW',null],
@@ -121,7 +185,7 @@ const SEED_PLAYERS = [
   ['p22','Lutalo',2010,'OM','DM'],
 ].map(([id,name,jahrgang,posPrimary,posSecondary]) => ({
   id, name, jahrgang, posPrimary, posSecondary, active: true,
-  strength: '', devPoint: '', focus: ''
+  strength: '', devPoint: '', focus: '', avatar: defaultAvatarFor(id),
 }));
 
 /* ------------------------------ Storage --------------------------------- */
@@ -129,7 +193,7 @@ const SEED_PLAYERS = [
 function freshDB() {
   return {
     version: DB_VERSION,
-    players: SEED_PLAYERS.map(p => ({...p})),
+    players: SEED_PLAYERS.map(p => ({...p, avatar: {...p.avatar}})),
     trainings: [],
     notes: [],
     matches: [],
@@ -139,8 +203,12 @@ function freshDB() {
 
 function migrate(db) {
   if (!db.version) db.version = 1;
+  db.players = (db.players || []).map(p => {
+    if (!p.avatar) p.avatar = defaultAvatarFor(p.id);
+    return p;
+  });
   // Zukünftige Migrationen hier einhängen, z.B.:
-  // if (db.version < 2) { ...db.version = 2; }
+  // if (db.version < 3) { ...db.version = 3; }
   db.version = DB_VERSION;
   return db;
 }
@@ -185,6 +253,10 @@ function fmtDate(iso) {
   if (!iso) return '';
   const [y,m,d] = iso.split('-');
   return `${d}.${m}.${y}`;
+}
+function monthLabel(ym) {
+  const [y,m] = ym.split('-');
+  return MONTH_NAMES[parseInt(m,10)-1] + ' ' + y;
 }
 function todayISO() {
   const d = new Date();
@@ -345,7 +417,6 @@ function autoArrangeStartXI(kaderIds, formationKey) {
   const pool = kaderIds.map(playerById).filter(Boolean);
   const used = new Set();
   const startElf = {};
-  // TW zuerst, dann DEF, MID, FWD priorisieren für bessere Passung
   const orderedSlots = formation.slots.slice().sort((a,b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group));
   orderedSlots.forEach(slot => {
     let best = null, bestScore = -1, bestQuote = -1;
@@ -383,7 +454,6 @@ function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
       (GROUP_OF[r.p.posPrimary] === group || (r.p.posSecondary && GROUP_OF[r.p.posSecondary] === group)));
     fit.slice(0, need).forEach(r => { chosen.push(r.p); chosenIds.add(r.p.id); });
   });
-  // Restplätze bis kaderSize mit bestplatzierten übrigen Spielern auffüllen
   ranked.forEach(r => {
     if (chosen.length >= kaderSize) return;
     if (!chosenIds.has(r.p.id)) { chosen.push(r.p); chosenIds.add(r.p.id); }
@@ -398,6 +468,9 @@ function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
 const state = {
   route: 'dashboard',
   params: {},
+  notesFilter: { category: '', priority: '', status: 'all' },
+  playerFilter: { search: '', position: '' },
+  trainingFilter: { period: 'all' },
 };
 
 function nav(route, params = {}) {
@@ -412,6 +485,12 @@ function nav(route, params = {}) {
 const app = document.getElementById('app');
 
 function render() {
+  const activeEl = document.activeElement;
+  let restore = null;
+  if (activeEl && app.contains(activeEl) && (activeEl.id || activeEl.name)) {
+    restore = { id: activeEl.id, name: activeEl.name, selStart: activeEl.selectionStart, selEnd: activeEl.selectionEnd };
+  }
+
   let html = '';
   switch (state.route) {
     case 'dashboard': html = viewDashboard(); break;
@@ -430,6 +509,16 @@ function render() {
   }
   app.innerHTML = html;
   bindNav();
+
+  if (restore) {
+    const el = restore.id ? document.getElementById(restore.id) : app.querySelector(`[name="${restore.name}"]`);
+    if (el) {
+      el.focus();
+      if (typeof restore.selStart === 'number' && el.setSelectionRange) {
+        try { el.setSelectionRange(restore.selStart, restore.selEnd); } catch (e) {}
+      }
+    }
+  }
 }
 
 function bindNav() {
@@ -519,14 +608,38 @@ function viewDashboard() {
 
 /* ------------------------------- Training ----------------------------------- */
 
+function trainingPeriods() {
+  const set = new Set();
+  DB.trainings.forEach(t => set.add(t.date.slice(0,7)));
+  return Array.from(set).sort().reverse();
+}
+
 function viewTrainingList() {
-  const list = DB.trainings.slice().sort((a,b) => b.date < a.date ? -1 : b.date > a.date ? 1 : 0);
+  const periods = trainingPeriods();
+  let list = DB.trainings.slice();
+  if (state.trainingFilter.period !== 'all') {
+    list = list.filter(t => t.date.slice(0,7) === state.trainingFilter.period);
+  }
+  list.sort((a,b) => b.date < a.date ? -1 : b.date > a.date ? 1 : 0);
+
   return `
   ${header('Training')}
   <main class="content">
-    <button class="btn btn-primary btn-block" data-action="newTraining">+ Neues Training</button>
+    <div class="row-actions">
+      <button class="btn btn-primary" style="flex:1" data-action="newTrainingToday">+ Training heute</button>
+      <button class="btn" style="flex:1" data-action="newTrainingPickDate">+ Anderes Datum</button>
+    </div>
+
+    ${periods.length > 1 ? `
+    <div class="filter-row">
+      <select id="trainingPeriodFilter">
+        <option value="all" ${state.trainingFilter.period==='all'?'selected':''}>Alle Trainings</option>
+        ${periods.map(p => `<option value="${p}" ${state.trainingFilter.period===p?'selected':''}>${monthLabel(p)}</option>`).join('')}
+      </select>
+    </div>` : ''}
+
     <div class="list">
-      ${list.length === 0 ? `<p class="empty">Noch keine Trainings erfasst.</p>` : list.map(t => {
+      ${list.length === 0 ? `<p class="empty">Keine Trainings in diesem Zeitraum.</p>` : list.map(t => {
         const counts = { anwesend:0, abgesagt:0, unentschuldigt:0, offen:0 };
         Object.values(t.attendance).forEach(s => counts[s] = (counts[s]||0)+1);
         return `
@@ -549,7 +662,11 @@ function viewTrainingDetail(id) {
   if (!t) return viewTrainingList();
   const players = activePlayers().slice().sort((a,b) => a.name.localeCompare(b.name, 'de'));
   return `
-  ${header(fmtDate(t.date), 'trainingList')}
+  <header class="topbar">
+    <button class="icon-btn" data-nav="trainingList">←</button>
+    <h1>${fmtDate(t.date)} <button class="inline-edit-btn" data-action="editTrainingDate" data-id="${t.id}" title="Datum ändern">✎</button></h1>
+    <button class="icon-btn" data-nav="backup">⋮</button>
+  </header>
   <main class="content">
     <div class="row-actions">
       <button class="btn btn-ghost" data-action="allAttendance" data-id="${t.id}" data-status="anwesend">Alle anwesend</button>
@@ -593,7 +710,7 @@ function viewTeams(trainingId) {
   const presentPlayers = presentIds.map(playerById).filter(Boolean);
   const withSecondary = presentPlayers.filter(p => p.posSecondary);
 
-  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams, t.date) : '';
+  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams) : '';
 
   return `
   ${header('Teams erstellen', 'trainingDetail', {id:t.id})}
@@ -640,7 +757,7 @@ function viewTeams(trainingId) {
   ${tabbar()}`;
 }
 
-function renderTeamsResult(teams, date) {
+function renderTeamsResult(teams) {
   const letters = ['A','B','C'];
   return `<div class="team-grid">
     ${teams.map((team, i) => `
@@ -679,19 +796,43 @@ function renderRotation() {
 /* ------------------------------ Spieler -------------------------------------- */
 
 function viewPlayers() {
-  const players = DB.players.slice().sort((a,b) => (b.active - a.active) || a.name.localeCompare(b.name, 'de'));
+  let players = DB.players.slice();
+  const f = state.playerFilter;
+  if (f.search) {
+    const q = f.search.toLowerCase();
+    players = players.filter(p => p.name.toLowerCase().includes(q));
+  }
+  if (f.position) {
+    players = players.filter(p => p.posPrimary === f.position || p.posSecondary === f.position);
+  }
+  players.sort((a,b) => (b.active - a.active) || a.name.localeCompare(b.name, 'de'));
+
   return `
   ${header('Spieler')}
   <main class="content">
     <button class="btn btn-primary btn-block" data-nav="playerForm" data-params='{}'>+ Spieler hinzufügen</button>
+
+    <div class="filter-row">
+      <input id="playerSearch" type="text" placeholder="Suche nach Namen…" value="${esc(f.search)}">
+      <select id="playerPosFilter">
+        <option value="">Alle Positionen</option>
+        ${POSITIONS.map(pos => `<option value="${pos}" ${f.position===pos?'selected':''}>${pos}</option>`).join('')}
+      </select>
+    </div>
+
     <div class="list">
-      ${players.map(p => {
+      ${players.length === 0 ? `<p class="empty">Keine Spieler gefunden.</p>` : players.map(p => {
         const s = playerStats(p.id);
         return `
         <div class="card card-tap ${!p.active ? 'card-inactive' : ''}" data-nav="playerProfile" data-params='{"id":"${p.id}"}'>
-          <div class="card-title">${esc(p.name)} ${!p.active ? '<span class="badge-off">inaktiv</span>' : ''}</div>
-          <div class="card-sub">${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''} · Jg. ${p.jahrgang}</div>
-          <div class="card-sub">Beteiligung: ${s.total ? s.quote + ' %' : '–'} ${s.last5Quote != null ? `· Letzte 5: ${s.last5Quote} % ${s.trend}` : ''}</div>
+          <div class="player-card-row">
+            <div class="list-avatar">${avatarSVG(p.avatar, 40)}</div>
+            <div>
+              <div class="card-title">${esc(p.name)} ${!p.active ? '<span class="badge-off">inaktiv</span>' : ''}</div>
+              <div class="card-sub">${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''} · Jg. ${p.jahrgang}</div>
+              <div class="card-sub">Beteiligung: ${s.total ? s.quote + ' %' : '–'} ${s.last5Quote != null ? `· Letzte 5: ${s.last5Quote} % ${s.trend}` : ''}</div>
+            </div>
+          </div>
         </div>`;
       }).join('')}
     </div>
@@ -699,8 +840,42 @@ function viewPlayers() {
   ${tabbar()}`;
 }
 
+function avatarEditorHTML(avatar) {
+  return `
+  <label>Avatar</label>
+  <div class="avatar-editor">
+    <div class="avatar-preview" id="avatarPreview">${avatarSVG(avatar, 84)}</div>
+    <div class="avatar-picker-group">
+      <div class="avatar-picker-label">Hautfarbe</div>
+      <div class="swatch-row">
+        ${SKIN_TONES.map(c => `<button type="button" class="swatch ${avatar.skin===c?'active':''}" style="background:${c}" data-avatar-field="Skin" data-value="${c}"></button>`).join('')}
+      </div>
+      <div class="avatar-picker-label">Haarfarbe</div>
+      <div class="swatch-row">
+        ${HAIR_COLORS.map(c => `<button type="button" class="swatch ${avatar.hair===c?'active':''}" style="background:${c}" data-avatar-field="Hair" data-value="${c}"></button>`).join('')}
+      </div>
+      <div class="avatar-picker-label">Frisur</div>
+      <div class="segmented small avatar-seg">
+        ${HAIR_SHAPES.map(s => `<button type="button" class="${avatar.hairShape===s?'active':''}" data-avatar-field="HairShape" data-value="${s}">${HAIR_SHAPE_LABEL[s]}</button>`).join('')}
+      </div>
+      <div class="avatar-picker-label">Gesichtsform</div>
+      <div class="segmented small avatar-seg">
+        ${FACE_SHAPES.map(s => `<button type="button" class="${avatar.faceShape===s?'active':''}" data-avatar-field="FaceShape" data-value="${s}">${FACE_SHAPE_LABEL[s]}</button>`).join('')}
+      </div>
+    </div>
+  </div>
+  <input type="hidden" name="avatarSkin" value="${avatar.skin}">
+  <input type="hidden" name="avatarHair" value="${avatar.hair}">
+  <input type="hidden" name="avatarHairShape" value="${avatar.hairShape}">
+  <input type="hidden" name="avatarFaceShape" value="${avatar.faceShape}">`;
+}
+
 function viewPlayerForm(id) {
   const p = id ? playerById(id) : null;
+  const avatar = p ? p.avatar : defaultAvatarFor('new_' + Date.now());
+  const hasData = p ? (DB.trainings.some(t => t.attendance && t.attendance[p.id]) ||
+                        DB.notes.some(n => n.playerId === p.id) ||
+                        DB.matches.some(m => (m.kader||[]).includes(p.id))) : false;
   return `
   ${header(p ? 'Spieler bearbeiten' : 'Spieler hinzufügen', 'players')}
   <main class="content">
@@ -717,8 +892,14 @@ function viewPlayerForm(id) {
         ${POSITIONS.map(pos => `<option value="${pos}" ${p && p.posSecondary===pos?'selected':''}>${pos}</option>`).join('')}
       </select>
       ${p ? `<label class="checkbox-row"><input type="checkbox" name="active" ${p.active?'checked':''}> Aktiv</label>` : ''}
+
+      ${avatarEditorHTML(avatar)}
+
       <button class="btn btn-primary btn-block" type="submit">Speichern</button>
-      ${p ? `<button type="button" class="btn btn-danger btn-block" data-action="deletePlayer" data-id="${p.id}">Spieler löschen</button>` : ''}
+      ${p ? `
+      <div class="delete-hint">Tipp: Statt endgültig zu löschen, kannst du den Spieler oben einfach deaktivieren (Haken bei „Aktiv" entfernen und speichern). Er bleibt dann in der Statistik erhalten, taucht aber nicht mehr in aktiven Listen auf.</div>
+      <button type="button" class="btn btn-danger btn-block" data-action="deletePlayer" data-id="${p.id}">Spieler endgültig löschen${hasData ? ' ⚠️' : ''}</button>
+      ` : ''}
     </form>
   </main>
   ${tabbar()}`;
@@ -735,7 +916,7 @@ function viewPlayerProfile(id) {
   ${header(p.name, 'players')}
   <main class="content">
     <div class="profile-head">
-      <div class="profile-avatar">${esc(p.name.split(' ').map(x=>x[0]).join('').slice(0,2))}</div>
+      <div class="profile-avatar">${avatarSVG(p.avatar, 54)}</div>
       <div>
         <div class="profile-name">${esc(p.name)} ${!p.active?'<span class="badge-off">inaktiv</span>':''}</div>
         <div class="muted">Jg. ${p.jahrgang} · ${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''}</div>
@@ -796,7 +977,14 @@ function noteCard(n) {
 
 function viewNotes() {
   const grouped = openNotesGrouped();
-  const notes = DB.notes.slice().sort((a,b) => b.date < a.date ? -1 : 1);
+  const f = state.notesFilter;
+  let notes = DB.notes.slice();
+  if (f.category) notes = notes.filter(n => n.category === f.category);
+  if (f.priority) notes = notes.filter(n => n.priority === f.priority);
+  if (f.status === 'open') notes = notes.filter(n => !n.done);
+  if (f.status === 'done') notes = notes.filter(n => n.done);
+  notes.sort((a,b) => b.date < a.date ? -1 : 1);
+
   return `
   ${header('Notizen')}
   <main class="content">
@@ -807,8 +995,24 @@ function viewNotes() {
       ${grouped.map(g => `<div class="card-sub">${esc(g.category)}: ${g.count} offen ${g.players.length ? '(' + esc(g.players.join(', ')) + ')' : ''}</div>`).join('')}
     </div>` : ''}
 
+    <div class="filter-row filter-row--3">
+      <select id="notesCategoryFilter">
+        <option value="">Alle Kategorien</option>
+        ${CATEGORIES.map(c => `<option value="${c}" ${f.category===c?'selected':''}>${c}</option>`).join('')}
+      </select>
+      <select id="notesPriorityFilter">
+        <option value="">Alle Prioritäten</option>
+        ${PRIORITIES.map(pr => `<option value="${pr}" ${f.priority===pr?'selected':''}>${pr}</option>`).join('')}
+      </select>
+      <select id="notesStatusFilter">
+        <option value="all" ${f.status==='all'?'selected':''}>Alle</option>
+        <option value="open" ${f.status==='open'?'selected':''}>Offen</option>
+        <option value="done" ${f.status==='done'?'selected':''}>Erledigt</option>
+      </select>
+    </div>
+
     <div class="list">
-      ${notes.length === 0 ? `<p class="empty">Noch keine Notizen.</p>` : notes.map(n => noteCard(n)).join('')}
+      ${notes.length === 0 ? `<p class="empty">Keine Notizen für diesen Filter.</p>` : notes.map(n => noteCard(n)).join('')}
     </div>
   </main>
   ${tabbar()}`;
@@ -983,9 +1187,12 @@ function viewBackup() {
 
 /* ---------------------------------- Actions ------------------------------------- */
 
-let timerState = { seconds: 360, running: false, interval: null, round: 1 };
+let timerState = { seconds: 360, running: false, interval: null, round: 1, started: false };
 
 document.addEventListener('click', (e) => {
+  const avatarBtn = e.target.closest('[data-avatar-field]');
+  if (avatarBtn) { handleAvatarPick(avatarBtn); return; }
+
   const navBtn = e.target.closest('[data-nav]');
   if (navBtn) {
     const params = navBtn.dataset.params ? JSON.parse(navBtn.dataset.params) : {};
@@ -1006,6 +1213,24 @@ document.addEventListener('change', (e) => {
     m.minutes[e.target.dataset.player] = Math.max(0, parseInt(e.target.value) || 0);
     saveDB();
   }
+  if (e.target.id === 'trainingPeriodFilter') {
+    state.trainingFilter.period = e.target.value;
+    render();
+  }
+  if (e.target.id === 'playerPosFilter') {
+    state.playerFilter.position = e.target.value;
+    render();
+  }
+  if (e.target.id === 'notesCategoryFilter') { state.notesFilter.category = e.target.value; render(); }
+  if (e.target.id === 'notesPriorityFilter') { state.notesFilter.priority = e.target.value; render(); }
+  if (e.target.id === 'notesStatusFilter') { state.notesFilter.status = e.target.value; render(); }
+});
+
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'playerSearch') {
+    state.playerFilter.search = e.target.value;
+    render();
+  }
 });
 
 document.addEventListener('submit', (e) => {
@@ -1016,16 +1241,22 @@ document.addEventListener('submit', (e) => {
   const fd = new FormData(form);
   if (type === 'player') {
     let id = form.dataset.id;
+    const avatar = {
+      skin: fd.get('avatarSkin'),
+      hair: fd.get('avatarHair'),
+      hairShape: fd.get('avatarHairShape'),
+      faceShape: fd.get('avatarFaceShape'),
+    };
     const data = {
       name: fd.get('name').trim(),
       jahrgang: parseInt(fd.get('jahrgang')),
       posPrimary: fd.get('posPrimary'),
       posSecondary: fd.get('posSecondary') || null,
-      active: fd.has('active') ? true : (id ? DB.players.find(p=>p.id===id).active : true),
+      active: id ? fd.has('active') : true,
+      avatar,
     };
     if (id) {
       Object.assign(playerById(id), data);
-      if (!fd.has('active') && form.querySelector('[name=active]')) data.active = false, Object.assign(playerById(id), {active:false});
     } else {
       id = uid('p');
       DB.players.push({ id, ...data, strength:'', devPoint:'', focus:'' });
@@ -1069,7 +1300,7 @@ document.addEventListener('submit', (e) => {
     if (newFormation !== m.formation) {
       m.formation = newFormation;
       const kader = m.kader || [];
-      const { startElf, bench } = autoArrangeStartXI(kader, newFormation);
+      const { startElf } = autoArrangeStartXI(kader, newFormation);
       m.startElf = startElf;
     }
     saveDB();
@@ -1077,19 +1308,77 @@ document.addEventListener('submit', (e) => {
   }
 });
 
+function handleAvatarPick(btn) {
+  const form = btn.closest('form');
+  if (!form) return;
+  const field = btn.dataset.avatarField; // Skin | Hair | HairShape | FaceShape
+  const value = btn.dataset.value;
+  const input = form.querySelector(`[name="avatar${field}"]`);
+  if (input) input.value = value;
+
+  form.querySelectorAll(`[data-avatar-field="${field}"]`).forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  const avatar = {
+    skin: form.querySelector('[name="avatarSkin"]').value,
+    hair: form.querySelector('[name="avatarHair"]').value,
+    hairShape: form.querySelector('[name="avatarHairShape"]').value,
+    faceShape: form.querySelector('[name="avatarFaceShape"]').value,
+  };
+  const preview = document.getElementById('avatarPreview');
+  if (preview) preview.innerHTML = avatarSVG(avatar, 84);
+}
+
+function openDatePicker(defaultDate, onConfirm, title) {
+  const overlay = document.createElement('div');
+  overlay.className = 'sheet-overlay';
+  overlay.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-head">${esc(title || 'Datum wählen')}<button class="icon-btn" id="sheetClose">✕</button></div>
+      <input type="date" id="datePickInput" value="${defaultDate}" class="date-picker-input">
+      <button class="btn btn-primary btn-block" id="datePickConfirm">Übernehmen</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
+    if (e.target.id === 'datePickConfirm') {
+      const val = document.getElementById('datePickInput').value;
+      overlay.remove();
+      if (val) onConfirm(val);
+    }
+  });
+}
+
 function handleAction(btn, e) {
   const action = btn.dataset.action;
   const id = btn.dataset.id;
 
-  if (action === 'newTraining') {
-    const date = prompt('Datum des Trainings (JJJJ-MM-TT):', todayISO());
-    if (!date) return;
+  if (action === 'newTrainingToday') {
+    const date = todayISO();
     const attendance = {};
     activePlayers().forEach(p => attendance[p.id] = 'offen');
     const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null } };
     DB.trainings.push(t);
     saveDB();
     nav('trainingDetail', { id: t.id });
+  }
+  else if (action === 'newTrainingPickDate') {
+    openDatePicker(todayISO(), (date) => {
+      const attendance = {};
+      activePlayers().forEach(p => attendance[p.id] = 'offen');
+      const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null } };
+      DB.trainings.push(t);
+      saveDB();
+      nav('trainingDetail', { id: t.id });
+    }, 'Datum des Trainings');
+  }
+  else if (action === 'editTrainingDate') {
+    const t = DB.trainings.find(x => x.id === id);
+    openDatePicker(t.date, (date) => {
+      t.date = date;
+      saveDB();
+      render();
+    }, 'Datum ändern');
   }
   else if (action === 'setAttendance') {
     const t = DB.trainings.find(x => x.id === id);
@@ -1139,8 +1428,19 @@ function handleAction(btn, e) {
   else if (action === 'timerReset') { resetTimer(); }
   else if (action === 'timerNextRound') { nextRound(); }
   else if (action === 'deletePlayer') {
-    if (!confirm('Spieler wirklich dauerhaft löschen? Statistikdaten bleiben erhalten, aber der Spieler verschwindet aus Listen.')) return;
-    DB.players = DB.players.filter(p => p.id !== id);
+    const p = playerById(id);
+    if (!p) return;
+    const hasData = DB.trainings.some(t => t.attendance && t.attendance[id]) ||
+                    DB.notes.some(n => n.playerId === id) ||
+                    DB.matches.some(m => (m.kader||[]).includes(id));
+    let ok;
+    if (hasData) {
+      ok = confirm(`${p.name} hat bereits Trainings-, Notiz- oder Spieltagsdaten. Endgültiges Löschen entfernt den Spieler dauerhaft; seine bisherigen Einträge bleiben ohne Namen stehen.\n\nEmpfohlen: stattdessen nur deaktivieren.\n\nTrotzdem endgültig löschen?`);
+    } else {
+      ok = confirm('Spieler wirklich endgültig löschen?');
+    }
+    if (!ok) return;
+    DB.players = DB.players.filter(x => x.id !== id);
     saveDB(); nav('players');
   }
   else if (action === 'deleteNote') {
@@ -1167,6 +1467,8 @@ function handleAction(btn, e) {
   }
   else if (action === 'autoKader') {
     const m = DB.matches.find(x => x.id === id);
+    const hasManual = (m.kader && m.kader.length) || Object.keys(m.startElf||{}).length;
+    if (hasManual && !confirm('Bestehender Kader und Startelf werden überschrieben. Fortfahren?')) return;
     const result = autoSelectKaderAndXI(m.formation, m.kaderSize, m.availability);
     m.kader = result.kaderIds;
     m.startElf = result.startElf;
@@ -1255,7 +1557,6 @@ function handleAction(btn, e) {
     input.click();
   }
 
-  // Priorität-Auswahl im Notizformular
   if (btn.classList.contains('prio-select')) {
     const form = btn.closest('form');
     form.querySelector('[name=priority]').value = btn.dataset.prio;
@@ -1347,8 +1648,9 @@ function openSlotPicker(matchId, slotKey) {
         ${kaderPlayers.map(p => {
           const currentSlot = Object.entries(m.startElf||{}).find(([,pid]) => pid === p.id);
           return `<button class="sheet-item" data-pick="${p.id}">
-            ${esc(p.name)} <span class="muted">(${p.posPrimary}${p.posSecondary?'/'+p.posSecondary:''})</span>
-            ${currentSlot ? `<span class="pos-chip">${currentSlot[0]}</span>` : ''}
+            ${avatarSVG(p.avatar, 28)}
+            <span>${esc(p.name)} <span class="muted">(${p.posPrimary}${p.posSecondary?'/'+p.posSecondary:''})</span></span>
+            ${currentSlot ? `<span class="pos-chip-dark">${currentSlot[0]}</span>` : ''}
           </button>`;
         }).join('')}
       </div>
@@ -1370,7 +1672,6 @@ function assignSlot(m, slotKey, newPlayerId) {
   const existingSlotOfNewPlayer = Object.entries(m.startElf).find(([,pid]) => pid === newPlayerId);
   const previousOccupant = m.startElf[slotKey];
   if (existingSlotOfNewPlayer) {
-    // Spieler steht schon auf anderer Position -> Tausch
     const [otherSlot] = existingSlotOfNewPlayer;
     m.startElf[otherSlot] = previousOccupant || null;
     if (!previousOccupant) delete m.startElf[otherSlot];
@@ -1378,7 +1679,36 @@ function assignSlot(m, slotKey, newPlayerId) {
   m.startElf[slotKey] = newPlayerId;
 }
 
-/* ---------------------------------- Init ----------------------------------------- */
+/* -------------------------- Online/Offline & Updates ------------------------------ */
+
+function updateOnlineStatus() {
+  const existing = document.getElementById('offlineBadge');
+  if (!navigator.onLine) {
+    if (!existing) {
+      const b = document.createElement('div');
+      b.id = 'offlineBadge';
+      b.className = 'offline-badge';
+      b.textContent = '📡 Offline – Daten werden lokal gespeichert';
+      document.body.appendChild(b);
+    }
+  } else if (existing) {
+    existing.remove();
+  }
+}
+
+function showUpdateBanner(reg) {
+  if (document.getElementById('updateBanner')) return;
+  const bar = document.createElement('div');
+  bar.id = 'updateBanner';
+  bar.className = 'update-banner';
+  bar.innerHTML = `<span>Neue Version verfügbar</span><button id="updateReloadBtn">Jetzt aktualisieren</button>`;
+  document.body.appendChild(bar);
+  document.getElementById('updateReloadBtn').addEventListener('click', () => {
+    if (reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+    navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload());
+    setTimeout(() => window.location.reload(), 1200);
+  });
+}
 
 function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
@@ -1388,7 +1718,7 @@ function registerServiceWorker() {
           const nw = reg.installing;
           nw.addEventListener('statechange', () => {
             if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-              toast('Neue Version verfügbar – Seite neu laden');
+              showUpdateBanner(reg);
             }
           });
         });
@@ -1397,5 +1727,10 @@ function registerServiceWorker() {
   }
 }
 
+/* ---------------------------------- Init ----------------------------------------- */
+
 render();
 registerServiceWorker();
+window.addEventListener('online', updateOnlineStatus);
+window.addEventListener('offline', updateOnlineStatus);
+updateOnlineStatus();

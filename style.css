@@ -270,4 +270,69 @@ button, input, select, textarea { font-family: inherit; font-size: 16px; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* ---------- Filter-Zeilen ---------- */
+.filter-row { display: flex; gap: 8px; margin: 10px 0; }
+.filter-row--3 { flex-wrap: wrap; }
+.filter-row input, .filter-row select {
+  flex: 1; min-width: 100px; padding: 11px; border-radius: 12px; border: 1px solid var(--border); background: #fff;
+}
+
+/* ---------- Player card layout ---------- */
+.player-card-row { display: flex; align-items: center; gap: 12px; }
+.list-avatar { flex-shrink: 0; border-radius: 50%; overflow: hidden; width: 40px; height: 40px; background: #eaf1ff; }
+.list-avatar svg { display: block; }
+
+/* ---------- Avatar editor ---------- */
+.avatar-editor { display: flex; gap: 14px; align-items: flex-start; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin: 6px 0 4px; }
+.avatar-preview { flex-shrink: 0; border-radius: 50%; overflow: hidden; width: 84px; height: 84px; background: #eaf1ff; }
+.avatar-preview svg { display: block; }
+.avatar-picker-group { flex: 1; min-width: 0; }
+.avatar-picker-label { font-size: 11.5px; color: var(--muted); font-weight: 700; margin: 8px 0 4px; }
+.avatar-picker-label:first-child { margin-top: 0; }
+.swatch-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.swatch {
+  width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--border); padding: 0;
+}
+.swatch.active { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-light); }
+.avatar-seg { flex-wrap: wrap; }
+.avatar-seg button { flex: 1 1 auto; min-width: 60px; }
+
+/* ---------- Delete hint ---------- */
+.delete-hint { font-size: 12.5px; color: var(--muted); background: var(--blue-light); border-radius: 12px; padding: 10px 12px; margin-top: 14px; }
+
+/* ---------- Profile avatar (SVG statt Initialen) ---------- */
+.profile-avatar { border-radius: 50%; overflow: hidden; width: 54px; height: 54px; background: #eaf1ff; flex-shrink: 0; }
+.profile-avatar svg { display: block; }
+
+/* ---------- Inline edit button (Trainingsdatum) ---------- */
+.inline-edit-btn {
+  background: rgba(255,255,255,0.18); border: none; color: #fff; border-radius: 8px;
+  font-size: 12px; padding: 3px 7px; vertical-align: middle; margin-left: 4px;
+}
+
+/* ---------- Date picker sheet ---------- */
+.date-picker-input { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid var(--border); font-size: 17px; margin-bottom: 10px; }
+
+/* ---------- Update banner ---------- */
+.update-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 70;
+  background: #111827; color: #fff; display: flex; align-items: center; justify-content: space-between;
+  padding: calc(10px + var(--safe-top)) 14px 10px; font-size: 13.5px; font-weight: 600;
+}
+.update-banner button {
+  background: var(--blue); color: #fff; border: none; border-radius: 10px; padding: 8px 14px; font-weight: 700; font-size: 13px;
+}
+
+/* ---------- Offline badge ---------- */
+.offline-badge {
+  position: fixed; bottom: calc(76px + var(--safe-bottom)); left: 50%; transform: translateX(-50%);
+  background: #92400e; color: #fff; padding: 8px 16px; border-radius: 24px; font-size: 12.5px; font-weight: 600;
+  z-index: 40; white-space: nowrap;
+}
+
+/* ---------- Sheet item with avatar ---------- */
+.sheet-item { justify-content: flex-start; }
+.sheet-item .list-avatar, .sheet-item svg { flex-shrink: 0; }
+.pos-chip-dark { margin-left: auto; background: var(--blue-light); color: var(--blue-dark); border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+
 .hidden { display: none; }

@@ -1,5 +1,5 @@
 // Bei jedem Deploy diese Versionsnummer erhöhen, damit Clients den neuen Cache laden.
-const CACHE_VERSION = 'u19-trainer-v1';
+const CACHE_VERSION = 'u19-trainer-v2';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const CORE_ASSETS = [
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/icon-192-maskable.png',
+  './icons/icon-512-maskable.png',
 ];
 
 self.addEventListener('install', (event) => {

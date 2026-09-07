@@ -30,7 +30,12 @@ Wichtig: In `sw.js` steht ganz oben `CACHE_VERSION`. Diesen Wert bei jedem Updat
 
 ## Icons austauschen
 
-Die mitgelieferten Icons (`icons/icon-192.png`, `icons/icon-512.png`) sind Platzhalter. Einfach durch eigene PNG-Dateien mit denselben Namen und Maßen ersetzen.
+Die mitgelieferten Icons sind Platzhalter. Es gibt zwei Varianten pro Größe:
+
+- `icon-192.png` / `icon-512.png` – randlos, wird u. a. für den iOS-Home-Bildschirm verwendet.
+- `icon-192-maskable.png` / `icon-512-maskable.png` – mit extra Rand ("Safe Zone"), damit Android das Icon in Kreis-/Squircle-Form zuschneiden kann, ohne wichtige Inhalte abzuschneiden.
+
+Beim Ersetzen durch ein eigenes Vereinslogo: Für die `-maskable`-Dateien das Logo deutlich kleiner/zentrierter platzieren (ca. 20–25 % Rand auf allen Seiten), für die normalen Dateien darf es bis an den Rand gehen.
 
 ## Backup
 
