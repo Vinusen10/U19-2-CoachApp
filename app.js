@@ -916,12 +916,14 @@ function viewPlayerProfile(id) {
   ${header(p.name, 'players')}
   <main class="content">
     <div class="profile-head">
-      <div class="profile-avatar">${avatarSVG(p.avatar, 54)}</div>
+      <button class="profile-avatar" data-nav="playerForm" data-params='{"id":"${p.id}"}' title="Spieler & Avatar bearbeiten">
+        ${avatarSVG(p.avatar, 54)}
+        <span class="avatar-edit-badge">✎</span>
+      </button>
       <div>
         <div class="profile-name">${esc(p.name)} ${!p.active?'<span class="badge-off">inaktiv</span>':''}</div>
         <div class="muted">Jg. ${p.jahrgang} · ${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''}</div>
       </div>
-      <button class="icon-btn" data-nav="playerForm" data-params='{"id":"${p.id}"}'>✎</button>
     </div>
 
     <div class="grid2">

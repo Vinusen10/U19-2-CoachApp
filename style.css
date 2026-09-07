@@ -44,12 +44,15 @@ button, input, select, textarea { font-family: inherit; font-size: 16px; }
 }
 .topbar h1 { font-size: 18px; margin: 0; font-weight: 700; flex: 1; text-align: center; }
 .topbar--brand { justify-content: space-between; align-items: center; }
+/* Basisvariante: für helle/weiße Flächen (Profilkopf, Sheets) */
 .icon-btn {
-  background: rgba(255,255,255,0.15); border: none; color: #fff;
+  background: var(--blue-light); border: none; color: var(--blue-dark);
   width: 40px; height: 40px; border-radius: 12px; font-size: 18px;
   display: flex; align-items: center; justify-content: center;
 }
 .icon-btn-spacer { width: 40px; display: inline-block; }
+/* Variante für die blaue Kopfleiste (heller, halbtransparenter Kontrast auf Blau) */
+.topbar .icon-btn { background: rgba(255,255,255,0.18); color: #fff; }
 
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-badge {
@@ -300,9 +303,18 @@ button, input, select, textarea { font-family: inherit; font-size: 16px; }
 /* ---------- Delete hint ---------- */
 .delete-hint { font-size: 12.5px; color: var(--muted); background: var(--blue-light); border-radius: 12px; padding: 10px 12px; margin-top: 14px; }
 
-/* ---------- Profile avatar (SVG statt Initialen) ---------- */
-.profile-avatar { border-radius: 50%; overflow: hidden; width: 54px; height: 54px; background: #eaf1ff; flex-shrink: 0; }
-.profile-avatar svg { display: block; }
+/* ---------- Profile avatar (SVG statt Initialen, antippbar) ---------- */
+.profile-avatar {
+  position: relative; border-radius: 50%; overflow: visible; width: 54px; height: 54px; flex-shrink: 0;
+  border: none; padding: 0; background: none;
+}
+.profile-avatar > svg { display: block; border-radius: 50%; overflow: hidden; background: #eaf1ff; }
+.avatar-edit-badge {
+  position: absolute; bottom: -2px; right: -2px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--blue); color: #fff; font-size: 10px; display: flex; align-items: center; justify-content: center;
+  border: 2px solid #fff;
+}
+.profile-avatar:active { opacity: 0.75; }
 
 /* ---------- Inline edit button (Trainingsdatum) ---------- */
 .inline-edit-btn {
