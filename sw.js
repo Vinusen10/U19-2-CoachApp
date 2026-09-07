@@ -1,24 +1,59 @@
-const CACHE='u19trainer-v3';
-const ASSETS=['./','./index.html','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
+// Bei jedem Deploy diese Versionsnummer erhöhen, damit Clients den neuen Cache laden.
+const CACHE_VERSION = 'u19-trainer-v1';
+const CORE_ASSETS = [
+  './',
+  './index.html',
+  './style.css',
+  './app.js',
+  './manifest.webmanifest',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+];
 
-self.addEventListener('install',event=>{
-  self.skipWaiting();
-  event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)));
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_VERSION).then((cache) => cache.addAll(CORE_ASSETS)).then(() => self.skipWaiting())
+  );
 });
-self.addEventListener('activate',event=>{
-  event.waitUntil(caches.keys()
-    .then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))
-    .then(()=>self.clients.claim()));
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((key) => key !== CACHE_VERSION).map((key) => caches.delete(key)))
+    ).then(() => self.clients.claim())
+  );
 });
-self.addEventListener('fetch',event=>{
-  const req=event.request;
-  if(req.mode==='navigate'){
-    event.respondWith(fetch(req).then(res=>{
-      const copy=res.clone();caches.open(CACHE).then(cache=>cache.put('./index.html',copy));return res;
-    }).catch(()=>caches.match('./index.html')));
+
+// Strategie: Netzwerk zuerst für HTML (damit Updates ankommen), Cache-First für den Rest.
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+
+  const isHTML = req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
+
+  if (isHTML) {
+    event.respondWith(
+      fetch(req).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE_VERSION).then((cache) => cache.put('./index.html', copy));
+        return res;
+      }).catch(() => caches.match('./index.html'))
+    );
     return;
   }
-  event.respondWith(caches.match(req).then(cached=>cached||fetch(req).then(res=>{
-    const copy=res.clone();caches.open(CACHE).then(cache=>cache.put(req,copy));return res;
-  })));
+
+  event.respondWith(
+    caches.match(req).then((cached) => {
+      if (cached) return cached;
+      return fetch(req).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
+        return res;
+      }).catch(() => cached);
+    })
+  );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') self.skipWaiting();
 });
