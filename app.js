@@ -710,7 +710,7 @@ function viewTeams(trainingId) {
   const presentPlayers = presentIds.map(playerById).filter(Boolean);
   const withSecondary = presentPlayers.filter(p => p.posSecondary);
 
-  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams) : '';
+  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams, t.id) : '';
 
   return `
   ${header('Teams erstellen', 'trainingDetail', {id:t.id})}
@@ -757,16 +757,22 @@ function viewTeams(trainingId) {
   ${tabbar()}`;
 }
 
-function renderTeamsResult(teams) {
+function renderTeamsResult(teams, trainingId) {
   const letters = ['A','B','C'];
   return `<div class="team-grid">
     ${teams.map((team, i) => `
       <div class="team-card team-${letters[i]}">
-        <div class="team-head">Team ${letters[i]}</div>
-        ${team.map(pl => `<div class="team-player"><span class="pos-chip">${pl.pos}</span>${esc(pl.name)}</div>`).join('')}
+        <div class="team-head">Team ${letters[i]} <span class="team-count">${team.length}</span></div>
+        ${team.map(pl => `
+          <button class="team-player team-player-tap" data-action="moveTeamPlayer" data-id="${trainingId}" data-player="${pl.id}" data-from="${i}">
+            <span class="pos-chip">${pl.pos}</span>${esc(pl.name)}
+            <span class="move-hint">⇄</span>
+          </button>`).join('')}
+        ${team.length === 0 ? `<div class="team-empty">–</div>` : ''}
       </div>
     `).join('')}
-  </div>`;
+  </div>
+  <p class="muted team-hint">Tipp: Auf einen Spieler tippen, um ihn in ein anderes Team zu verschieben.</p>`;
 }
 
 function renderRotation() {
@@ -791,6 +797,37 @@ function renderRotation() {
     </div>
     <div class="muted" id="roundLabel">Runde 1</div>
   </div>`;
+}
+
+function openTeamMoveSheet(trainingId, playerId, fromIndex) {
+  const t = DB.trainings.find(x => x.id === trainingId);
+  const teams = t.teamGen.teams;
+  const letters = ['A','B','C'];
+  const player = teams[fromIndex].find(p => p.id === playerId);
+  if (!player) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'sheet-overlay';
+  overlay.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-head">${esc(player.name)} verschieben<button class="icon-btn" id="sheetClose">✕</button></div>
+      <div class="sheet-list">
+        ${teams.map((team, i) => i === fromIndex ? '' : `
+          <button class="sheet-item" data-move-to="${i}">Zu Team ${letters[i]} <span class="muted">(${team.length} Spieler)</span></button>
+        `).join('')}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
+    const moveBtn = e.target.closest('[data-move-to]');
+    if (!moveBtn) return;
+    const toIndex = parseInt(moveBtn.dataset.moveTo, 10);
+    teams[fromIndex] = teams[fromIndex].filter(p => p.id !== playerId);
+    teams[toIndex].push(player);
+    overlay.remove();
+    saveDB(); render();
+  });
 }
 
 /* ------------------------------ Spieler -------------------------------------- */
@@ -1424,6 +1461,9 @@ function handleAction(btn, e) {
       text += '\n';
     });
     copyToClipboard(text.trim());
+  }
+  else if (action === 'moveTeamPlayer') {
+    openTeamMoveSheet(id, btn.dataset.player, parseInt(btn.dataset.from, 10));
   }
   else if (action === 'timerStart') { startTimer(); }
   else if (action === 'timerPause') { pauseTimer(); }
