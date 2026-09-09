@@ -40,3 +40,7 @@ Beim Ersetzen durch ein eigenes Vereinslogo: Für die `-maskable`-Dateien das Lo
 ## Backup
 
 Unter **Backup** in der App lässt sich jederzeit der komplette Datenbestand als JSON-Datei herunterladen und bei Bedarf (z. B. neues Gerät) wieder importieren.
+
+## Notizen mit Fotos
+
+Im Bereich **Notizen** kannst du freie Notizen mit Fotos anlegen (z. B. Trainingsplanung, Foto der Taktiktafel). Fotos werden beim Hinzufügen automatisch verkleinert und komprimiert, damit der Speicherplatz im Browser (localStorage, meist 5–10 MB) nicht zu schnell voll wird. Bei sehr vielen Fotos wächst auch die Backup-JSON-Datei entsprechend. Spielerbezogene Notizen (Beobachtung, Maßnahme, Priorität) bleiben weiterhin im jeweiligen Spielerprofil.

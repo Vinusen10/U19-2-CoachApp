@@ -8,7 +8,7 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -196,8 +196,9 @@ function freshDB() {
     players: SEED_PLAYERS.map(p => ({...p, avatar: {...p.avatar}})),
     trainings: [],
     notes: [],
+    generalNotes: [],
     matches: [],
-    settings: {},
+    settings: { trainingWeekdays: [1, 4] }, // Standard: Montag + Donnerstag
   };
 }
 
@@ -207,8 +208,11 @@ function migrate(db) {
     if (!p.avatar) p.avatar = defaultAvatarFor(p.id);
     return p;
   });
+  db.generalNotes = db.generalNotes || [];
+  db.settings = db.settings || {};
+  if (!db.settings.trainingWeekdays) db.settings.trainingWeekdays = [1, 4];
   // Zukünftige Migrationen hier einhängen, z.B.:
-  // if (db.version < 3) { ...db.version = 3; }
+  // if (db.version < 5) { ...db.version = 5; }
   db.version = DB_VERSION;
   return db;
 }
@@ -222,6 +226,7 @@ function loadDB() {
     db.players = db.players || [];
     db.trainings = db.trainings || [];
     db.notes = db.notes || [];
+    db.generalNotes = db.generalNotes || [];
     db.matches = db.matches || [];
     db.settings = db.settings || {};
     return migrate(db);
@@ -245,6 +250,139 @@ function uid(prefix) {
   return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+const WEEKDAYS = [
+  { val: 1, label: 'Mo' }, { val: 2, label: 'Di' }, { val: 3, label: 'Mi' },
+  { val: 4, label: 'Do' }, { val: 5, label: 'Fr' }, { val: 6, label: 'Sa' }, { val: 0, label: 'So' },
+];
+
+// Legt für die kommenden `horizonDays` Tage automatisch Trainings an den in
+// DB.settings.trainingWeekdays hinterlegten Wochentagen an, sofern an dem Datum
+// noch kein Training existiert. Gibt die Anzahl neu angelegter Trainings zurück.
+function generateUpcomingTrainings(horizonDays) {
+  horizonDays = horizonDays || 14;
+  const weekdays = DB.settings.trainingWeekdays || [];
+  if (!weekdays.length) return 0;
+  const existingDates = new Set(DB.trainings.map(t => t.date));
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let created = 0;
+  for (let i = 0; i < horizonDays; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    if (!weekdays.includes(d.getDay())) continue;
+    const iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    if (existingDates.has(iso)) continue;
+    const attendance = {};
+    activePlayers().forEach(p => attendance[p.id] = 'offen');
+    DB.trainings.push({ id: uid('t'), date: iso, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' } });
+    existingDates.add(iso);
+    created++;
+  }
+  if (created > 0) saveDB();
+  return created;
+}
+
+// Bestmögliche Erkennung von Datum + Gegner aus eingefügtem Spielplan-Text (z. B. von fußball.de).
+// Kein Live-Abgleich, sondern ein Text-Parser: fußball.de bietet keine offene API für Drittanbieter.
+// Unterstützt zwei Formate:
+// 1) Das echte fußball.de-Exportformat: Blöcke aus Datumszeile + mehrzeiligen Teamnamen, durch "Zum Spiel" getrennt.
+// 2) Einfaches Format "Team A - Team B" auf einer Zeile (z. B. bei manuell eingegebenem Text).
+function parseFussballFixtures(text) {
+  if (/zum spiel/i.test(text)) return parseFussballBlockFormat(text);
+  return parseFussballDashFormat(text);
+}
+
+function parseFussballBlockFormat(text) {
+  const rawLines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const looseDateRe = /(\d{1,2})\.(\d{1,2})\.(\d{2,4})/;
+  const skipLineRe = /^zum spiel$/i;
+  const colonOnlyRe = /^:+\s*$/;
+  const compLineRe = /^(\d\.\s*)?Kreisklasse$|^ME\s*\|/i;
+
+  const blocks = [];
+  let current = [];
+  rawLines.forEach(line => {
+    if (skipLineRe.test(line)) {
+      if (current.length) blocks.push(current);
+      current = [];
+    } else {
+      current.push(line);
+    }
+  });
+  if (current.length) blocks.push(current);
+
+  const results = [];
+  blocks.forEach(block => {
+    const dateLineIdx = block.findIndex(l => looseDateRe.test(l));
+    if (dateLineIdx === -1) return;
+    const dm = block[dateLineIdx].match(looseDateRe);
+    const [, dd, mm, yy] = dm;
+    const year = yy.length === 2 ? '20' + yy : yy;
+    const iso = `${year}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+
+    const nameCandidates = [];
+    block.forEach((line, idx) => {
+      if (idx === dateLineIdx) return;
+      if (colonOnlyRe.test(line)) return;
+      if (looseDateRe.test(line)) return;
+      if (compLineRe.test(line)) return;
+      if (nameCandidates.length === 0 || nameCandidates[nameCandidates.length - 1] !== line) {
+        nameCandidates.push(line);
+      }
+    });
+
+    let opponent = '';
+    if (nameCandidates.length >= 2) {
+      const home = nameCandidates[0], away = nameCandidates[1];
+      if (/menden/i.test(home) && !/menden/i.test(away)) opponent = away;
+      else if (/menden/i.test(away) && !/menden/i.test(home)) opponent = home;
+      else opponent = away;
+    } else if (nameCandidates.length === 1 && !/menden/i.test(nameCandidates[0])) {
+      opponent = nameCandidates[0];
+    }
+
+    results.push({ tempId: uid('fi'), date: iso, opponent, checked: true });
+  });
+
+  return dedupeFixturesByDate(results);
+}
+
+function parseFussballDashFormat(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const dateRe = /(\d{1,2})\.(\d{1,2})\.(\d{2,4})/;
+  const vsRe = /([A-ZÄÖÜ][\wÄÖÜäöüß.\-\/ ]{2,40}?)\s+-\s+([A-ZÄÖÜ][\wÄÖÜäöüß.\-\/ ]{2,40})/;
+  const results = [];
+  for (let i = 0; i < lines.length; i++) {
+    const dm = lines[i].match(dateRe);
+    if (!dm) continue;
+    const [, dd, mm, yy] = dm;
+    const year = yy.length === 2 ? '20' + yy : yy;
+    const iso = `${year}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+    let opponent = '';
+    for (let j = i; j <= i + 2 && j < lines.length; j++) {
+      const vm = lines[j].match(vsRe);
+      if (vm) {
+        const a = vm[1].trim(), b = vm[2].trim();
+        if (/menden/i.test(a) && !/menden/i.test(b)) opponent = b;
+        else if (/menden/i.test(b) && !/menden/i.test(a)) opponent = a;
+        else opponent = b;
+        break;
+      }
+    }
+    results.push({ tempId: uid('fi'), date: iso, opponent, checked: true });
+  }
+  return dedupeFixturesByDate(results);
+}
+
+function dedupeFixturesByDate(results) {
+  const seen = new Set();
+  return results.filter(r => {
+    if (seen.has(r.date)) return false;
+    seen.add(r.date);
+    return true;
+  });
+}
+
 /* ------------------------------ Helpers ---------------------------------- */
 
 function activePlayers() { return DB.players.filter(p => p.active); }
@@ -253,6 +391,14 @@ function fmtDate(iso) {
   if (!iso) return '';
   const [y,m,d] = iso.split('-');
   return `${d}.${m}.${y}`;
+}
+function fmtDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const datePart = String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + d.getFullYear();
+  const timePart = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  return datePart + ' · ' + timePart;
 }
 function monthLabel(ym) {
   const [y,m] = ym.split('-');
@@ -306,6 +452,69 @@ function playerStats(playerId) {
   }
 
   return { total, anwesend, abgesagt, unentschuldigt, offen, quote, last5Quote, trend, list };
+}
+
+// Donut-Diagramm der Saison-Verteilung (Anwesend/Abgesagt/Unentschuldigt/Offen).
+function attendanceDonutSVG(stats, size) {
+  size = size || 108;
+  const total = stats.total;
+  if (!total) return '';
+  const r = size / 2 - 12;
+  const cx = size / 2, cy = size / 2;
+  const circumference = 2 * Math.PI * r;
+  const segments = [
+    { color: '#16a34a', value: stats.anwesend },
+    { color: '#eab308', value: stats.abgesagt },
+    { color: '#dc2626', value: stats.unentschuldigt },
+    { color: '#9ca3af', value: stats.offen },
+  ];
+  let offset = 0;
+  let circles = '';
+  segments.forEach(seg => {
+    if (seg.value <= 0) return;
+    const dash = (seg.value / total) * circumference;
+    circles += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${seg.color}" stroke-width="14"
+      stroke-dasharray="${dash.toFixed(1)} ${(circumference - dash).toFixed(1)}"
+      stroke-dashoffset="${(-offset).toFixed(1)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    offset += dash;
+  });
+  return `
+  <svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#eef2fb" stroke-width="14"/>
+    ${circles}
+    <text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="19" font-weight="800" fill="#111827">${stats.quote}%</text>
+    <text x="${cx}" y="${cy + 15}" text-anchor="middle" font-size="9" fill="#6b7280">Beteiligung</text>
+  </svg>`;
+}
+
+// Verlaufsstreifen der letzten Trainings (Balkenhöhe/Farbe je nach Status).
+function trainingHistorySVG(list, playerId, width, height) {
+  width = width || 300; height = height || 74;
+  const recent = list.slice(-12);
+  if (recent.length === 0) return '';
+  const n = recent.length;
+  const gap = 6;
+  const barW = Math.max(9, (width - gap * (n + 1)) / n);
+  const statusColor = { anwesend:'#16a34a', abgesagt:'#eab308', unentschuldigt:'#dc2626', offen:'#cbd5e1' };
+  const statusHeight = { anwesend:1, abgesagt:0.55, unentschuldigt:0.3, offen:0.18 };
+  const baseY = height - 8;
+  const maxBarH = height - 12;
+  let bars = '';
+  recent.forEach((t, i) => {
+    const status = t.attendance[playerId] || 'offen';
+    const h = Math.max(5, maxBarH * (statusHeight[status] || 0.18));
+    const x = gap + i * (barW + gap);
+    const y = baseY - h;
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="3.5" fill="${statusColor[status]}"/>`;
+  });
+  const firstDate = fmtDate(recent[0].date);
+  const lastDate = fmtDate(recent[recent.length - 1].date);
+  return `
+  <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+    <line x1="0" y1="${baseY + 2}" x2="${width}" y2="${baseY + 2}" stroke="#e2e8f5" stroke-width="1"/>
+    ${bars}
+  </svg>
+  <div class="chart-axis-labels"><span>${esc(firstDate)}</span><span>${esc(lastDate)}</span></div>`;
 }
 
 function matchStats(playerId) {
@@ -400,6 +609,64 @@ function generateTeams(presentIds, numTeams, overrideMap) {
   return teams;
 }
 
+// Stärke-Score: kombiniert Trainingsbeteiligung (immer vorhanden) mit Spielbeteiligung
+// (Startelf-Quote aus Spieltagen, falls schon Spieltage erfasst sind).
+function playerStrengthScore(playerId) {
+  const trainingsQuote = playerStats(playerId).quote;
+  const ms = matchStats(playerId);
+  if (ms.imKader === 0) return trainingsQuote;
+  const spielQuote = Math.round((ms.startelf / ms.imKader) * 100);
+  return Math.round(trainingsQuote * 0.6 + spielQuote * 0.4);
+}
+
+function sortByStrengthDesc(players) {
+  // Zufälliger Tiebreaker bei Gleichstand, damit "Neu auslosen" bei gleichauf liegenden
+  // Spielern trotzdem eine leichte Durchmischung bringt.
+  return players
+    .map(p => ({ p, score: playerStrengthScore(p.id), rnd: Math.random() }))
+    .sort((a,b) => b.score - a.score || b.rnd - a.rnd)
+    .map(x => x.p);
+}
+
+// Teilt anwesende Spieler in eine stärkere und eine schwächere Gruppe auf, getrennt nach
+// Trainings-/Spielbeteiligung, aber je Positionsgruppe (Verteidigung/Mittelfeld/Sturm), damit
+// beide Gruppen möglichst eine sinnvolle Positionsverteilung behalten. Die schwächere Gruppe
+// bekommt bevorzugt einen Torhüter, falls einer anwesend ist.
+function generateTeamsBySkill(presentIds, overrideMap) {
+  const players = presentIds.map(playerById).filter(Boolean);
+  const byGroup = { TW: [], DEF: [], MID: [], FWD: [] };
+  players.forEach(p => {
+    const pos = effectivePosition(p, overrideMap);
+    byGroup[GROUP_OF[pos]].push(p);
+  });
+
+  const strong = [];
+  const weak = [];
+
+  const tws = sortByStrengthDesc(byGroup.TW);
+  if (tws.length === 1) {
+    weak.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
+  } else if (tws.length >= 2) {
+    weak.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
+    strong.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' });
+    tws.slice(2).forEach((p, i) => {
+      (i % 2 === 0 ? strong : weak).push({ id: p.id, name: p.name, pos: 'TW' });
+    });
+  }
+
+  ['DEF','MID','FWD'].forEach(group => {
+    const sorted = sortByStrengthDesc(byGroup[group]);
+    const half = Math.ceil(sorted.length / 2);
+    sorted.forEach((p, i) => {
+      const pos = effectivePosition(p, overrideMap);
+      const entry = { id: p.id, name: p.name, pos };
+      if (i < half) strong.push(entry); else weak.push(entry);
+    });
+  });
+
+  return { strong, weak };
+}
+
 /* ------------------------- Formation / Startelf --------------------------- */
 
 function slotScore(slot, player, overridePos) {
@@ -468,16 +735,49 @@ function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
 const state = {
   route: 'dashboard',
   params: {},
-  notesFilter: { category: '', priority: '', status: 'all' },
+  history: [],
   playerFilter: { search: '', position: '' },
   trainingFilter: { period: 'all' },
+  fussballImport: { raw: '', parsed: [] },
 };
 
+function leavingRouteHook(nextRoute) {
+  if (state.route === 'generalNoteForm' && nextRoute !== 'generalNoteForm') {
+    finalizeGeneralNote();
+  }
+}
+
 function nav(route, params = {}) {
+  leavingRouteHook(route);
+  state.history.push({ route: state.route, params: state.params });
   state.route = route;
   state.params = params;
   window.scrollTo(0, 0);
   render();
+}
+
+function goBack() {
+  if (state.history.length === 0) { nav('dashboard'); return; }
+  const prev = state.history.pop();
+  leavingRouteHook(prev.route);
+  state.route = prev.route;
+  state.params = prev.params;
+  window.scrollTo(0, 0);
+  render();
+}
+
+function finalizeGeneralNote() {
+  const ta = document.getElementById('generalNoteText');
+  if (!ta) return;
+  const id = ta.dataset.id;
+  const n = DB.generalNotes.find(x => x.id === id);
+  if (!n) return;
+  n.text = ta.value;
+  n.updatedAt = new Date().toISOString();
+  if (!ta.value.trim() && (!n.images || n.images.length === 0)) {
+    DB.generalNotes = DB.generalNotes.filter(x => x.id !== id);
+  }
+  saveDB();
 }
 
 /* --------------------------------- Render ---------------------------------- */
@@ -502,9 +802,11 @@ function render() {
     case 'playerForm': html = viewPlayerForm(state.params.id); break;
     case 'notes': html = viewNotes(); break;
     case 'noteForm': html = viewNoteForm(state.params.id, state.params.playerId); break;
+    case 'generalNoteForm': html = viewGeneralNoteForm(state.params.id); break;
     case 'matchList': html = viewMatchList(); break;
     case 'matchDetail': html = viewMatchDetail(state.params.id); break;
     case 'backup': html = viewBackup(); break;
+    case 'importFussball': html = viewImportFussball(); break;
     default: html = viewDashboard();
   }
   app.innerHTML = html;
@@ -530,16 +832,17 @@ function topLevel(route) {
   if (['dashboard'].includes(route)) return 'dashboard';
   if (['trainingList','trainingDetail'].includes(route)) return 'trainingList';
   if (['teams'].includes(route)) return 'teams';
-  if (['matchList','matchDetail'].includes(route)) return 'matchList';
+  if (['matchList','matchDetail','importFussball'].includes(route)) return 'matchList';
   if (['players','playerProfile','playerForm'].includes(route)) return 'players';
-  if (['notes','noteForm'].includes(route)) return 'notes';
+  if (['notes','noteForm','generalNoteForm'].includes(route)) return 'notes';
   return route;
 }
 
-function header(title, backRoute, backParams) {
+function header(title) {
+  const showBack = state.history.length > 0;
   return `
   <header class="topbar">
-    ${backRoute ? `<button class="icon-btn" data-nav="${backRoute}" data-params='${esc(JSON.stringify(backParams||{}))}'>←</button>` : `<span class="icon-btn-spacer"></span>`}
+    ${showBack ? `<button class="icon-btn" data-back="true">←</button>` : `<span class="icon-btn-spacer"></span>`}
     <h1>${esc(title)}</h1>
     <button class="icon-btn" data-nav="backup" title="Backup">⋮</button>
   </header>`;
@@ -663,7 +966,7 @@ function viewTrainingDetail(id) {
   const players = activePlayers().slice().sort((a,b) => a.name.localeCompare(b.name, 'de'));
   return `
   <header class="topbar">
-    <button class="icon-btn" data-nav="trainingList">←</button>
+    <button class="icon-btn" data-back="true">←</button>
     <h1>${fmtDate(t.date)} <button class="inline-edit-btn" data-action="editTrainingDate" data-id="${t.id}" title="Datum ändern">✎</button></h1>
     <button class="icon-btn" data-nav="backup">⋮</button>
   </header>
@@ -705,12 +1008,13 @@ function viewTeams(trainingId) {
     <button class="btn btn-primary btn-block" data-nav="trainingList">Zum Training</button></main>${tabbar()}`;
   }
 
-  t.teamGen = t.teamGen || { numTeams: 2, posOverride: {}, teams: null };
+  t.teamGen = t.teamGen || { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' };
+  if (!t.teamGen.mode) t.teamGen.mode = 'strength';
   const presentIds = Object.entries(t.attendance).filter(([,s]) => s === 'anwesend').map(([id]) => id);
   const presentPlayers = presentIds.map(playerById).filter(Boolean);
   const withSecondary = presentPlayers.filter(p => p.posSecondary);
 
-  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams, t.id) : '';
+  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams, t.id, t.teamGen.teamLabels) : '';
 
   return `
   ${header('Teams erstellen', 'trainingDetail', {id:t.id})}
@@ -730,6 +1034,16 @@ function viewTeams(trainingId) {
         <button class="${t.teamGen.numTeams===3?'active':''}" data-action="setNumTeams" data-id="${t.id}" data-num="3">3 Teams</button>
       </div>
     </div>
+
+    ${t.teamGen.numTeams === 2 ? `
+    <div class="select-row">
+      <label>Verteilung</label>
+      <div class="segmented">
+        <button class="${t.teamGen.mode==='strength'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="strength">Nach Stärke</button>
+        <button class="${t.teamGen.mode==='random'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="random">Zufällig</button>
+      </div>
+      ${t.teamGen.mode === 'strength' ? `<p class="muted small-note">Team A = stärkere Gruppe, Team B = schwächere Gruppe – nach Trainings- und Spielbeteiligung, je Position getrennt aufgeteilt. Team B bekommt bevorzugt einen Torhüter.</p>` : ''}
+    </div>` : ''}
 
     ${withSecondary.length ? `
     <details class="details-block">
@@ -757,20 +1071,22 @@ function viewTeams(trainingId) {
   ${tabbar()}`;
 }
 
-function renderTeamsResult(teams, trainingId) {
+function renderTeamsResult(teams, trainingId, labels) {
   const letters = ['A','B','C'];
   return `<div class="team-grid">
-    ${teams.map((team, i) => `
+    ${teams.map((team, i) => {
+      const title = labels && labels[i] ? `Team ${letters[i]} · ${labels[i]}` : `Team ${letters[i]}`;
+      return `
       <div class="team-card team-${letters[i]}">
-        <div class="team-head">Team ${letters[i]} <span class="team-count">${team.length}</span></div>
+        <div class="team-head">${title} <span class="team-count">${team.length}</span></div>
         ${team.map(pl => `
           <button class="team-player team-player-tap" data-action="moveTeamPlayer" data-id="${trainingId}" data-player="${pl.id}" data-from="${i}">
             <span class="pos-chip">${pl.pos}</span>${esc(pl.name)}
             <span class="move-hint">⇄</span>
           </button>`).join('')}
         ${team.length === 0 ? `<div class="team-empty">–</div>` : ''}
-      </div>
-    `).join('')}
+      </div>`;
+    }).join('')}
   </div>
   <p class="muted team-hint">Tipp: Auf einen Spieler tippen, um ihn in ein anderes Team zu verschieben.</p>`;
 }
@@ -971,8 +1287,20 @@ function viewPlayerProfile(id) {
     </div>
 
     <div class="card">
-      <div class="card-title">Trainingshistorie</div>
-      <div class="card-sub">Anwesend: ${s.anwesend} · Abgesagt: ${s.abgesagt} · Unentsch.: ${s.unentschuldigt}</div>
+      <div class="card-title">Trainingsverlauf</div>
+      ${s.total === 0 ? `<p class="muted">Noch keine Trainingsdaten.</p>` : `
+      <div class="chart-row">
+        <div class="donut-wrap">${attendanceDonutSVG(s, 108)}</div>
+        <div class="chart-legend">
+          <div class="legend-item"><span class="legend-dot" style="background:#16a34a"></span>Anwesend: ${s.anwesend}</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#eab308"></span>Abgesagt: ${s.abgesagt}</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#dc2626"></span>Unentsch.: ${s.unentschuldigt}</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#9ca3af"></span>Offen: ${s.offen}</div>
+        </div>
+      </div>
+      <div class="chart-subtitle">Letzte ${Math.min(12, s.total)} Trainings</div>
+      ${trainingHistorySVG(s.list, p.id)}
+      `}
     </div>
 
     <div class="card">
@@ -1014,45 +1342,69 @@ function noteCard(n) {
   </div>`;
 }
 
+function generalNoteCard(n) {
+  const lines = (n.text || '').split('\n').filter(l => l.trim().length);
+  const title = lines[0] ? lines[0].slice(0, 70) : 'Neue Notiz';
+  const preview = lines.slice(1).join(' ').slice(0, 100);
+  const hasImg = n.images && n.images.length > 0;
+  return `
+  <div class="card card-tap note-card" data-nav="generalNoteForm" data-params='{"id":"${n.id}"}'>
+    ${hasImg ? `<div class="note-thumb"><img src="${n.images[0]}" alt=""></div>` : ''}
+    <div class="note-card-body">
+      <div class="card-title">${esc(title)}</div>
+      ${preview ? `<div class="card-sub">${esc(preview)}</div>` : ''}
+      <div class="card-sub note-date">${fmtDateTime(n.updatedAt)}${hasImg && n.images.length > 1 ? ` · ${n.images.length} Fotos` : hasImg ? ' · 1 Foto' : ''}</div>
+    </div>
+  </div>`;
+}
+
 function viewNotes() {
   const grouped = openNotesGrouped();
-  const f = state.notesFilter;
-  let notes = DB.notes.slice();
-  if (f.category) notes = notes.filter(n => n.category === f.category);
-  if (f.priority) notes = notes.filter(n => n.priority === f.priority);
-  if (f.status === 'open') notes = notes.filter(n => !n.done);
-  if (f.status === 'done') notes = notes.filter(n => n.done);
-  notes.sort((a,b) => b.date < a.date ? -1 : 1);
+  const general = DB.generalNotes.slice().sort((a,b) => b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0);
 
   return `
   ${header('Notizen')}
   <main class="content">
-    <button class="btn btn-primary btn-block" data-nav="noteForm" data-params='{}'>+ Neue Notiz</button>
+    <button class="btn btn-primary btn-block" data-action="newGeneralNote">+ Neue Notiz</button>
 
-    ${grouped.length ? `<div class="card">
-      <div class="card-title">Offene Schwerpunkte</div>
+    ${grouped.length ? `
+    <details class="details-block">
+      <summary>Offene Trainingsschwerpunkte aus Spielernotizen (${grouped.reduce((a,g)=>a+g.count,0)})</summary>
       ${grouped.map(g => `<div class="card-sub">${esc(g.category)}: ${g.count} offen ${g.players.length ? '(' + esc(g.players.join(', ')) + ')' : ''}</div>`).join('')}
-    </div>` : ''}
-
-    <div class="filter-row filter-row--3">
-      <select id="notesCategoryFilter">
-        <option value="">Alle Kategorien</option>
-        ${CATEGORIES.map(c => `<option value="${c}" ${f.category===c?'selected':''}>${c}</option>`).join('')}
-      </select>
-      <select id="notesPriorityFilter">
-        <option value="">Alle Prioritäten</option>
-        ${PRIORITIES.map(pr => `<option value="${pr}" ${f.priority===pr?'selected':''}>${pr}</option>`).join('')}
-      </select>
-      <select id="notesStatusFilter">
-        <option value="all" ${f.status==='all'?'selected':''}>Alle</option>
-        <option value="open" ${f.status==='open'?'selected':''}>Offen</option>
-        <option value="done" ${f.status==='done'?'selected':''}>Erledigt</option>
-      </select>
-    </div>
+      <p class="muted small-note">Einzelne Spielernotizen findest du im jeweiligen Spielerprofil.</p>
+    </details>` : ''}
 
     <div class="list">
-      ${notes.length === 0 ? `<p class="empty">Keine Notizen für diesen Filter.</p>` : notes.map(n => noteCard(n)).join('')}
+      ${general.length === 0 ? `<p class="empty">Noch keine Notizen. Tippe oben auf „+ Neue Notiz“ – z. B. um die nächste Trainingseinheit zu planen oder ein Foto von der Taktiktafel festzuhalten.</p>` : general.map(n => generalNoteCard(n)).join('')}
     </div>
+  </main>
+  ${tabbar()}`;
+}
+
+function viewGeneralNoteForm(id) {
+  const n = DB.generalNotes.find(x => x.id === id);
+  if (!n) return viewNotes();
+  const images = n.images || [];
+  return `
+  ${header('Notiz', 'notes')}
+  <main class="content">
+    <textarea id="generalNoteText" class="note-textarea" placeholder="Notiz eingeben…" data-id="${n.id}" rows="10">${esc(n.text)}</textarea>
+
+    ${images.length ? `
+    <div class="note-photo-grid">
+      ${images.map((img, i) => `
+        <div class="note-photo-item">
+          <img src="${img}" alt="">
+          <button class="note-photo-remove" data-action="removeNotePhoto" data-id="${n.id}" data-index="${i}">✕</button>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <button class="btn btn-block" data-action="addNotePhoto" data-id="${n.id}">📷 Foto hinzufügen</button>
+    <input type="file" id="notePhotoInput" accept="image/*" class="hidden">
+
+    <p class="muted small-note">Wird automatisch gespeichert. Leer gelassene Notizen werden beim Verlassen wieder entfernt.</p>
+
+    <button class="btn btn-danger btn-block" data-action="deleteGeneralNote" data-id="${n.id}">Notiz löschen</button>
   </main>
   ${tabbar()}`;
 }
@@ -1061,8 +1413,9 @@ function viewNoteForm(id, playerId) {
   const n = id ? DB.notes.find(x => x.id === id) : null;
   const players = DB.players.slice().sort((a,b) => a.name.localeCompare(b.name, 'de'));
   const selectedPlayer = n ? n.playerId : (playerId || '');
+  const backId = selectedPlayer || null;
   return `
-  ${header(n ? 'Notiz bearbeiten' : 'Neue Notiz', 'notes')}
+  ${header(n ? 'Notiz bearbeiten' : 'Neue Notiz', backId ? 'playerProfile' : 'notes', backId ? {id: backId} : {})}
   <main class="content">
     <form class="form" data-form="note" data-id="${n ? n.id : ''}">
       <label>Spieler</label>
@@ -1099,6 +1452,7 @@ function viewMatchList() {
   ${header('Spieltag')}
   <main class="content">
     <button class="btn btn-primary btn-block" data-action="newMatch">+ Neuer Spieltag</button>
+    <button class="btn btn-block" data-nav="importFussball">📋 Spielplan aus fußball.de importieren</button>
     <div class="list">
       ${list.length === 0 ? `<p class="empty">Noch keine Spieltage gespeichert.</p>` : list.map(m => `
         <div class="card card-tap" data-nav="matchDetail" data-params='{"id":"${m.id}"}'>
@@ -1106,6 +1460,37 @@ function viewMatchList() {
           <div class="card-sub">${m.formation} · Kader ${((m.kader)||[]).length}/${m.kaderSize}</div>
         </div>`).join('')}
     </div>
+  </main>
+  ${tabbar()}`;
+}
+
+function viewImportFussball() {
+  const imp = state.fussballImport;
+  if (!imp.parsed || imp.parsed.length === 0) {
+    return `
+    ${header('Spielplan importieren', 'matchList')}
+    <main class="content">
+      <p class="muted">Öffne auf fußball.de den Spielplan eurer Mannschaft, markiere die kommenden Spiele in der Tabelle und kopiere den Text (Strg/Cmd+C). Füge ihn unten ein – die App versucht, Datum und Gegner automatisch zu erkennen.</p>
+      <textarea id="fussballPasteText" class="note-textarea" rows="10" placeholder="Spielplan-Text hier einfügen…"></textarea>
+      <button class="btn btn-primary btn-block" data-action="parseFussballText">Text analysieren</button>
+      <p class="muted small-note">Hinweis: fußball.de bietet keine offene Schnittstelle für externe Apps – ein automatischer Live-Abgleich ist deshalb nicht möglich. Diese Funktion erkennt Termine bestmöglich aus eingefügtem Text; bitte vor dem Übernehmen prüfen.</p>
+    </main>
+    ${tabbar()}`;
+  }
+  return `
+  ${header('Spielplan importieren', 'matchList')}
+  <main class="content">
+    <p class="muted">${imp.parsed.length} Termin(e) erkannt. Datum/Gegner bei Bedarf korrigieren, unpassende Zeilen abwählen.</p>
+    <div class="list">
+      ${imp.parsed.map(r => `
+        <div class="import-row">
+          <input type="checkbox" data-action="toggleImportRow" data-temp-id="${r.tempId}" ${r.checked?'checked':''}>
+          <input type="date" data-action="editImportDate" data-temp-id="${r.tempId}" value="${r.date}">
+          <input type="text" placeholder="Gegner" data-action="editImportOpponent" data-temp-id="${r.tempId}" value="${esc(r.opponent)}">
+        </div>`).join('')}
+    </div>
+    <button class="btn btn-primary btn-block" data-action="confirmFussballImport">Ausgewählte Spieltage anlegen</button>
+    <button class="btn btn-block" data-action="resetFussballImport">Zurück zum Text</button>
   </main>
   ${tabbar()}`;
 }
@@ -1206,9 +1591,18 @@ function renderPitch(m, formation) {
 /* --------------------------------- Backup -------------------------------------- */
 
 function viewBackup() {
+  const weekdays = DB.settings.trainingWeekdays || [];
   return `
-  ${header('Backup')}
+  ${header('Einstellungen')}
   <main class="content">
+    <div class="card">
+      <div class="card-title">Trainingstage</div>
+      <p class="muted">An diesen Wochentagen werden automatisch für die kommenden 2 Wochen Trainings angelegt – neue Trainings erscheinen dann von selbst unter „Training", ohne dass du sie manuell erstellen musst.</p>
+      <div class="weekday-row">
+        ${WEEKDAYS.map(w => `<button class="weekday-btn ${weekdays.includes(w.val)?'active':''}" data-action="toggleWeekday" data-val="${w.val}">${w.label}</button>`).join('')}
+      </div>
+      <button class="btn btn-block" data-action="fillTrainings">Fehlende Trainingstage jetzt anlegen</button>
+    </div>
     <div class="card">
       <div class="card-title">Daten sichern</div>
       <p class="muted">Lädt eine JSON-Datei mit allen Spielern, Trainings, Notizen und Spieltagen herunter.</p>
@@ -1229,6 +1623,9 @@ function viewBackup() {
 let timerState = { seconds: 360, running: false, interval: null, round: 1, started: false };
 
 document.addEventListener('click', (e) => {
+  const backBtn = e.target.closest('[data-back]');
+  if (backBtn) { goBack(); return; }
+
   const avatarBtn = e.target.closest('[data-avatar-field]');
   if (avatarBtn) { handleAvatarPick(avatarBtn); return; }
 
@@ -1260,15 +1657,37 @@ document.addEventListener('change', (e) => {
     state.playerFilter.position = e.target.value;
     render();
   }
-  if (e.target.id === 'notesCategoryFilter') { state.notesFilter.category = e.target.value; render(); }
-  if (e.target.id === 'notesPriorityFilter') { state.notesFilter.priority = e.target.value; render(); }
-  if (e.target.id === 'notesStatusFilter') { state.notesFilter.status = e.target.value; render(); }
+  if (e.target.matches('[data-action="toggleImportRow"]')) {
+    const row = (state.fussballImport.parsed || []).find(r => r.tempId === e.target.dataset.tempId);
+    if (row) row.checked = e.target.checked;
+  }
+  if (e.target.matches('[data-action="editImportDate"]')) {
+    const row = (state.fussballImport.parsed || []).find(r => r.tempId === e.target.dataset.tempId);
+    if (row) row.date = e.target.value;
+  }
+  if (e.target.matches('[data-action="editImportOpponent"]')) {
+    const row = (state.fussballImport.parsed || []).find(r => r.tempId === e.target.dataset.tempId);
+    if (row) row.opponent = e.target.value;
+  }
 });
 
+let generalNoteSaveTimer = null;
 document.addEventListener('input', (e) => {
   if (e.target.id === 'playerSearch') {
     state.playerFilter.search = e.target.value;
     render();
+  }
+  if (e.target.id === 'generalNoteText') {
+    const noteId = e.target.dataset.id;
+    const n = DB.generalNotes.find(x => x.id === noteId);
+    if (n) {
+      n.text = e.target.value;
+      clearTimeout(generalNoteSaveTimer);
+      generalNoteSaveTimer = setTimeout(() => {
+        n.updatedAt = new Date().toISOString();
+        saveDB();
+      }, 500);
+    }
   }
 });
 
@@ -1301,6 +1720,7 @@ document.addEventListener('submit', (e) => {
       DB.players.push({ id, ...data, strength:'', devPoint:'', focus:'' });
     }
     saveDB();
+    toast('Gespeichert ✓');
     nav('playerProfile', { id });
   } else if (type === 'playerProfileExtra') {
     const p = playerById(form.dataset.id);
@@ -1308,6 +1728,7 @@ document.addEventListener('submit', (e) => {
     p.devPoint = fd.get('devPoint');
     p.focus = fd.get('focus');
     saveDB();
+    toast('Gespeichert ✓');
     render();
   } else if (type === 'note') {
     let id = form.dataset.id;
@@ -1328,6 +1749,7 @@ document.addEventListener('submit', (e) => {
       DB.notes.push({ id, ...data });
     }
     saveDB();
+    toast('Gespeichert ✓');
     nav('playerProfile', { id: data.playerId });
   } else if (type === 'matchMeta') {
     const m = DB.matches.find(x => x.id === form.dataset.id);
@@ -1343,6 +1765,7 @@ document.addEventListener('submit', (e) => {
       m.startElf = startElf;
     }
     saveDB();
+    toast('Übernommen ✓');
     render();
   }
 });
@@ -1396,7 +1819,7 @@ function handleAction(btn, e) {
     const date = todayISO();
     const attendance = {};
     activePlayers().forEach(p => attendance[p.id] = 'offen');
-    const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null } };
+    const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' } };
     DB.trainings.push(t);
     saveDB();
     nav('trainingDetail', { id: t.id });
@@ -1405,7 +1828,7 @@ function handleAction(btn, e) {
     openDatePicker(todayISO(), (date) => {
       const attendance = {};
       activePlayers().forEach(p => attendance[p.id] = 'offen');
-      const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null } };
+      const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' } };
       DB.trainings.push(t);
       saveDB();
       nav('trainingDetail', { id: t.id });
@@ -1436,8 +1859,17 @@ function handleAction(btn, e) {
   }
   else if (action === 'setNumTeams') {
     const t = DB.trainings.find(x => x.id === id);
-    t.teamGen.numTeams = parseInt(btn.dataset.num);
+    t.teamGen.numTeams = parseInt(btn.dataset.num, 10);
+    if (t.teamGen.numTeams !== 2) t.teamGen.mode = 'random'; // Stärke-Split nur für 2 Teams definiert
     t.teamGen.teams = null;
+    t.teamGen.teamLabels = null;
+    saveDB(); render();
+  }
+  else if (action === 'setTeamMode') {
+    const t = DB.trainings.find(x => x.id === id);
+    t.teamGen.mode = btn.dataset.mode;
+    t.teamGen.teams = null;
+    t.teamGen.teamLabels = null;
     saveDB(); render();
   }
   else if (action === 'setOverride') {
@@ -1448,15 +1880,23 @@ function handleAction(btn, e) {
   else if (action === 'drawTeams') {
     const t = DB.trainings.find(x => x.id === id);
     const presentIds = Object.entries(t.attendance).filter(([,s]) => s === 'anwesend').map(([pid]) => pid);
-    t.teamGen.teams = generateTeams(presentIds, t.teamGen.numTeams, t.teamGen.posOverride);
+    if (t.teamGen.numTeams === 2 && t.teamGen.mode === 'strength') {
+      const { strong, weak } = generateTeamsBySkill(presentIds, t.teamGen.posOverride);
+      t.teamGen.teams = [strong, weak];
+      t.teamGen.teamLabels = ['Stärker', 'Schwächer'];
+    } else {
+      t.teamGen.teams = generateTeams(presentIds, t.teamGen.numTeams, t.teamGen.posOverride);
+      t.teamGen.teamLabels = null;
+    }
     saveDB(); render();
   }
   else if (action === 'copyTeamsWhatsApp') {
     const t = DB.trainings.find(x => x.id === id);
     const letters = ['A','B','C'];
+    const labels = t.teamGen.teamLabels;
     let text = `⚽ Trainingsspiele ${fmtDate(t.date)}\n\n`;
     t.teamGen.teams.forEach((team, i) => {
-      text += `Team ${letters[i]}\n`;
+      text += `Team ${letters[i]}${labels && labels[i] ? ' (' + labels[i] + ')' : ''}\n`;
       team.forEach(pl => text += `- ${pl.name} (${pl.pos})\n`);
       text += '\n';
     });
@@ -1492,6 +1932,45 @@ function handleAction(btn, e) {
     DB.notes = DB.notes.filter(x => x.id !== id);
     saveDB();
     pid ? nav('playerProfile', { id: pid }) : nav('notes');
+  }
+  else if (action === 'newGeneralNote') {
+    const n = { id: uid('gn'), text: '', images: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    DB.generalNotes.push(n);
+    saveDB();
+    nav('generalNoteForm', { id: n.id });
+  }
+  else if (action === 'addNotePhoto') {
+    const input = document.getElementById('notePhotoInput');
+    input.onchange = () => {
+      const file = input.files[0];
+      if (!file) { return; }
+      compressImageToDataURL(file, 1280, 0.72).then(dataUrl => {
+        const n = DB.generalNotes.find(x => x.id === id);
+        if (!n) return;
+        n.images = n.images || [];
+        n.images.push(dataUrl);
+        n.updatedAt = new Date().toISOString();
+        saveDB();
+        render();
+        toast('Foto hinzugefügt ✓');
+      }).catch(() => alert('Foto konnte nicht geladen werden.'));
+      input.value = '';
+    };
+    input.click();
+  }
+  else if (action === 'removeNotePhoto') {
+    const n = DB.generalNotes.find(x => x.id === id);
+    if (!n) return;
+    const idx = parseInt(btn.dataset.index, 10);
+    n.images.splice(idx, 1);
+    n.updatedAt = new Date().toISOString();
+    saveDB(); render();
+  }
+  else if (action === 'deleteGeneralNote') {
+    if (!confirm('Notiz wirklich löschen?')) return;
+    DB.generalNotes = DB.generalNotes.filter(x => x.id !== id);
+    saveDB();
+    nav('notes');
   }
   else if (action === 'newMatch') {
     const m = {
@@ -1564,6 +2043,52 @@ function handleAction(btn, e) {
     DB.matches = DB.matches.filter(x => x.id !== id);
     saveDB(); nav('matchList');
   }
+  else if (action === 'toggleWeekday') {
+    const val = parseInt(btn.dataset.val, 10);
+    DB.settings.trainingWeekdays = DB.settings.trainingWeekdays || [];
+    const idx = DB.settings.trainingWeekdays.indexOf(val);
+    if (idx >= 0) DB.settings.trainingWeekdays.splice(idx, 1);
+    else DB.settings.trainingWeekdays.push(val);
+    saveDB();
+    const created = generateUpcomingTrainings(14);
+    render();
+    if (created > 0) toast(`${created} Training(s) angelegt ✓`);
+  }
+  else if (action === 'fillTrainings') {
+    const created = generateUpcomingTrainings(14);
+    render();
+    toast(created > 0 ? `${created} Training(s) angelegt ✓` : 'Bereits alles angelegt ✓');
+  }
+  else if (action === 'parseFussballText') {
+    const ta = document.getElementById('fussballPasteText');
+    const text = ta ? ta.value : '';
+    const parsed = parseFussballFixtures(text);
+    state.fussballImport = { raw: text, parsed };
+    render();
+    if (parsed.length === 0) toast('Keine Termine erkannt – bitte Text prüfen');
+  }
+  else if (action === 'resetFussballImport') {
+    state.fussballImport = { raw: '', parsed: [] };
+    render();
+  }
+  else if (action === 'confirmFussballImport') {
+    const rows = (state.fussballImport.parsed || []).filter(r => r.checked && r.date);
+    const existingDates = new Set(DB.matches.map(m => m.date));
+    let count = 0;
+    rows.forEach(r => {
+      if (existingDates.has(r.date)) return;
+      DB.matches.push({
+        id: uid('m'), date: r.date, opponent: r.opponent || '', formation: '4-3-3',
+        kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {},
+      });
+      existingDates.add(r.date);
+      count++;
+    });
+    saveDB();
+    state.fussballImport = { raw: '', parsed: [] };
+    toast(count > 0 ? `${count} Spieltag(e) angelegt ✓` : 'Keine neuen Spieltage (Duplikate übersprungen)');
+    nav('matchList');
+  }
   else if (action === 'exportBackup') {
     const data = JSON.stringify(DB, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
@@ -1575,6 +2100,7 @@ function handleAction(btn, e) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    toast('Backup heruntergeladen ✓');
   }
   else if (action === 'importBackup') {
     const input = document.getElementById('importFile');
@@ -1605,6 +2131,32 @@ function handleAction(btn, e) {
     form.querySelectorAll('.prio-select').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
   }
+}
+
+// Verkleinert/komprimiert ein Foto vor dem Speichern in localStorage (Speicherplatz sparen).
+function compressImageToDataURL(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width, height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width >= height) { height = Math.round(height * maxDim / width); width = maxDim; }
+          else { width = Math.round(width * maxDim / height); height = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 function copyToClipboard(text) {
@@ -1771,7 +2323,9 @@ function registerServiceWorker() {
 
 /* ---------------------------------- Init ----------------------------------------- */
 
+const autoCreatedTrainings = generateUpcomingTrainings(14);
 render();
+if (autoCreatedTrainings > 0) toast(`${autoCreatedTrainings} Training(s) automatisch angelegt ✓`);
 registerServiceWorker();
 window.addEventListener('online', updateOnlineStatus);
 window.addEventListener('offline', updateOnlineStatus);
