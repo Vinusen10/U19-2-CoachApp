@@ -145,6 +145,8 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 .card-inactive { opacity: 0.55; }
 .card-done { opacity: 0.6; }
 .badge-off { font-size: 10px; background: var(--gray-bg); color: var(--gray); padding: 2px 6px; border-radius: 8px; margin-left: 6px; }
+.badge-open { font-size: 10px; background: var(--yellow-bg); color: var(--yellow); padding: 2px 6px; border-radius: 8px; margin-left: 6px; font-weight: 700; }
+.completed-card { margin: 14px 0; }
 .empty { color: var(--muted); text-align: center; padding: 30px 10px; }
 
 /* ---------- Freie Notizen (Notizen-Tab) ---------- */

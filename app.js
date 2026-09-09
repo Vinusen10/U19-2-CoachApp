@@ -8,7 +8,7 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -211,8 +211,17 @@ function migrate(db) {
   db.generalNotes = db.generalNotes || [];
   db.settings = db.settings || {};
   if (!db.settings.trainingWeekdays) db.settings.trainingWeekdays = [1, 4];
+  // Bereits vorhandene Spieltage mit ausgefülltem Kader gelten als abgeschlossen (sonst
+  // würden bisher gezählte Einsatzstatistiken plötzlich verschwinden). Leere/geplante
+  // Spieltage starten als nicht abgeschlossen und müssen manuell bestätigt werden.
+  db.matches = (db.matches || []).map(m => {
+    if (typeof m.completed !== 'boolean') {
+      m.completed = !!(m.kader && m.kader.length > 0);
+    }
+    return m;
+  });
   // Zukünftige Migrationen hier einhängen, z.B.:
-  // if (db.version < 5) { ...db.version = 5; }
+  // if (db.version < 6) { ...db.version = 6; }
   db.version = DB_VERSION;
   return db;
 }
@@ -422,9 +431,19 @@ function esc(s) {
 
 /* --------------------- Statistik-Berechnungen ---------------------------- */
 
+// Ein Training zählt erst in der Statistik, wenn für JEDEN Spieler ein echter Status
+// gesetzt wurde (kein "offen" mehr übrig) - verhindert, dass automatisch angelegte,
+// noch nicht stattgefundene Trainings die Trainingsbeteiligung verfälschen.
+function isTrainingComplete(t) {
+  const values = Object.values(t.attendance || {});
+  if (values.length === 0) return false;
+  return values.every(s => s !== 'offen');
+}
+
 function trainingsForPlayer(playerId) {
   return DB.trainings
     .filter(t => t.attendance && Object.prototype.hasOwnProperty.call(t.attendance, playerId))
+    .filter(isTrainingComplete)
     .sort((a,b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 }
 
@@ -517,8 +536,11 @@ function trainingHistorySVG(list, playerId, width, height) {
   <div class="chart-axis-labels"><span>${esc(firstDate)}</span><span>${esc(lastDate)}</span></div>`;
 }
 
+// Ein Spieltag zählt erst in der Statistik, wenn der Trainer ihn manuell als
+// abgeschlossen markiert hat (Kader/Startelf/Spielzeit final) - sonst würden geplante,
+// aber noch nicht gespielte Spieltage die Einsatzstatistik verfälschen.
 function matchStats(playerId) {
-  const matches = DB.matches.filter(m => (m.kader || []).includes(playerId));
+  const matches = DB.matches.filter(m => m.completed && (m.kader || []).includes(playerId));
   let startelf = 0, eingewechselt = 0, bankOhne = 0, minuten = 0;
   matches.forEach(m => {
     const isStarter = Object.values(m.startElf || {}).includes(playerId);
@@ -926,7 +948,7 @@ function viewDashboard() {
   <main class="content">
     <div class="grid2">
       <div class="stat-card"><div class="stat-num">${activePlayers().length}</div><div class="stat-label">Spieler</div></div>
-      <div class="stat-card"><div class="stat-num">${DB.trainings.length}</div><div class="stat-label">Trainings erfasst</div></div>
+      <div class="stat-card"><div class="stat-num">${DB.trainings.filter(isTrainingComplete).length}</div><div class="stat-label">Trainings erfasst</div></div>
       <div class="stat-card"><div class="stat-num">${openImportant}</div><div class="stat-label">Wichtige Notizen offen</div></div>
       <div class="stat-card"><div class="stat-num">${tq != null ? tq + ' %' : '–'}</div><div class="stat-label">Ø Trainingsbeteiligung</div></div>
     </div>
@@ -991,7 +1013,7 @@ function viewTrainingList() {
         Object.values(t.attendance).forEach(s => counts[s] = (counts[s]||0)+1);
         return `
         <div class="card card-tap" data-nav="trainingDetail" data-params='{"id":"${t.id}"}'>
-          <div class="card-title">${fmtDate(t.date)}</div>
+          <div class="card-title">${fmtDate(t.date)} ${counts.offen > 0 ? '<span class="badge-open">Offen</span>' : ''}</div>
           <div class="card-sub">
             <span class="dot dot-green"></span>${counts.anwesend} anwesend
             <span class="dot dot-yellow"></span>${counts.abgesagt} abgesagt
@@ -1015,6 +1037,7 @@ function viewTrainingDetail(id) {
     <button class="icon-btn" data-nav="backup">⋮</button>
   </header>
   <main class="content">
+    ${!isTrainingComplete(t) ? `<p class="muted small-note">Zählt erst in der Trainingsbeteiligung, sobald jeder Spieler einen Status außer „Offen" hat (noch ${Object.values(t.attendance).filter(s=>s==='offen').length} offen).</p>` : ''}
     <div class="row-actions">
       <button class="btn btn-ghost" data-action="allAttendance" data-id="${t.id}" data-status="anwesend">Alle anwesend</button>
       <button class="btn btn-ghost" data-action="allAttendance" data-id="${t.id}" data-status="offen">Alle offen</button>
@@ -1535,7 +1558,7 @@ function viewMatchList() {
     <div class="list">
       ${list.length === 0 ? `<p class="empty">Noch keine Spieltage gespeichert.</p>` : list.map(m => `
         <div class="card card-tap" data-nav="matchDetail" data-params='{"id":"${m.id}"}'>
-          <div class="card-title">${fmtDate(m.date)} vs. ${esc(m.opponent || '–')}</div>
+          <div class="card-title">${fmtDate(m.date)} vs. ${esc(m.opponent || '–')} ${!m.completed ? '<span class="badge-open">Offen</span>' : ''}</div>
           <div class="card-sub">${m.formation} · Kader ${((m.kader)||[]).length}/${m.kaderSize}</div>
         </div>`).join('')}
     </div>
@@ -1593,6 +1616,14 @@ function viewMatchDetail(id) {
       <select name="formation">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===m.formation?'selected':''}>${f}</option>`).join('')}</select>
       <button class="btn btn-block" type="submit">Übernehmen</button>
     </form>
+
+    <div class="card completed-card">
+      <label class="checkbox-row">
+        <input type="checkbox" data-action="toggleMatchCompleted" data-id="${m.id}" ${m.completed?'checked':''}>
+        Spieltag abgeschlossen
+      </label>
+      <p class="muted small-note">Erst wenn hier ein Haken gesetzt ist, fließt dieser Spieltag in die Einsatzstatistik der Spieler ein (Kader-/Startelf-/Spielzeit-Zählung im Profil). So verfälschen geplante, aber noch nicht gespielte Spieltage nichts.</p>
+    </div>
 
     <details class="details-block" ${m.kader && m.kader.length ? '' : 'open'}>
       <summary>Verfügbarkeit (${activePlayers().filter(p=>m.availability[p.id]!==false).length}/${activePlayers().length} verfügbar)</summary>
@@ -1727,6 +1758,15 @@ document.addEventListener('change', (e) => {
     m.minutes = m.minutes || {};
     m.minutes[e.target.dataset.player] = Math.max(0, parseInt(e.target.value) || 0);
     saveDB();
+  }
+  if (e.target.matches('[data-action="toggleMatchCompleted"]')) {
+    const m = DB.matches.find(x => x.id === e.target.dataset.id);
+    if (m) {
+      m.completed = e.target.checked;
+      saveDB();
+      render();
+      toast(m.completed ? 'Spieltag abgeschlossen – zählt jetzt in der Statistik ✓' : 'Spieltag als offen markiert');
+    }
   }
   if (e.target.id === 'trainingPeriodFilter') {
     state.trainingFilter.period = e.target.value;
@@ -2058,7 +2098,7 @@ function handleAction(btn, e) {
   else if (action === 'newMatch') {
     const m = {
       id: uid('m'), date: todayISO(), opponent: '', formation: '4-3-3',
-      kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {},
+      kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {}, completed: false,
     };
     DB.matches.push(m);
     saveDB();
@@ -2162,7 +2202,7 @@ function handleAction(btn, e) {
       if (existingDates.has(r.date)) return;
       DB.matches.push({
         id: uid('m'), date: r.date, opponent: r.opponent || '', formation: '4-3-3',
-        kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {},
+        kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {}, completed: false,
       });
       existingDates.add(r.date);
       count++;
