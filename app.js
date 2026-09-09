@@ -531,28 +531,72 @@ function matchStats(playerId) {
   return { imKader: matches.length, startelf, eingewechselt, bankOhne, minuten };
 }
 
-function computeWarnings() {
-  const warnings = [];
-  activePlayers().forEach(p => {
+// Erzeugt kategorisierte Hinweise (rot = sehr bedenklich, gelb = weniger bedenklich,
+// grün = besonders gut). Negative Hinweise haben Vorrang, grün ist auf max. 3 begrenzt,
+// insgesamt werden maximal 10 Hinweise zurückgegeben.
+function computeHints() {
+  const red = [];
+  const yellow = [];
+  const greenCandidates = [];
+  const players = activePlayers();
+
+  players.forEach(p => {
     const s = playerStats(p.id);
     if (s.total < 2) return;
-    const lastN = s.list.slice(-3);
-    if (lastN.length === 3 && lastN.every(t => t.attendance[p.id] !== 'anwesend')) {
-      warnings.push(`${p.name} – 3 Trainings in Folge nicht anwesend`);
+
+    const last3 = s.list.slice(-3);
+    if (last3.length === 3 && last3.every(t => t.attendance[p.id] !== 'anwesend')) {
+      red.push({ text: `${p.name} – 3 Trainings in Folge nicht anwesend`, weight: 100 });
     }
     const last5 = s.list.slice(-5);
     const unentsch5 = last5.filter(t => t.attendance[p.id] === 'unentschuldigt').length;
     if (unentsch5 >= 2) {
-      warnings.push(`${p.name} – ${unentsch5}x unentschuldigt in den letzten ${last5.length} Trainings`);
+      red.push({ text: `${p.name} – ${unentsch5}x unentschuldigt in den letzten ${last5.length} Trainings`, weight: 95 });
+    } else if (unentsch5 === 1) {
+      yellow.push({ text: `${p.name} – 1x unentschuldigt in den letzten ${last5.length} Trainings`, weight: 35 });
     }
     if (s.total >= 3 && s.quote < 60) {
-      warnings.push(`${p.name} – Trainingsbeteiligung unter 60 % (${s.quote} %)`);
+      red.push({ text: `${p.name} – Trainingsbeteiligung unter 60 % (${s.quote} %)`, weight: 90 });
+    } else if (s.total >= 3 && s.quote < 75) {
+      yellow.push({ text: `${p.name} – Trainingsbeteiligung im unteren Mittelfeld (${s.quote} %)`, weight: 40 });
     }
     if (s.last5Quote != null && s.total >= 5 && s.last5Quote < s.quote - 15) {
-      warnings.push(`${p.name} – Trainingsbeteiligung zuletzt deutlich gesunken`);
+      yellow.push({ text: `${p.name} – Trainingsbeteiligung zuletzt deutlich gesunken`, weight: 60 });
     }
   });
-  return warnings;
+
+  const withStats = players.map(p => ({ p, s: playerStats(p.id) })).filter(x => x.s.total >= 3);
+  if (withStats.length) {
+    const maxQuote = Math.max(...withStats.map(x => x.s.quote));
+    if (maxQuote > 0) {
+      withStats.filter(x => x.s.quote === maxQuote).forEach(x => {
+        greenCandidates.push({ text: `${x.p.name} – beste Trainingsbeteiligung der Mannschaft (${maxQuote} %)`, weight: 200 + maxQuote });
+      });
+    }
+  }
+  withStats.forEach(({ p, s }) => {
+    if (s.last5Quote != null && s.total >= 5 && s.last5Quote > s.quote + 15) {
+      greenCandidates.push({ text: `${p.name} – Trainingsbeteiligung deutlich gesteigert (${s.quote} % → ${s.last5Quote} %)`, weight: 150 + (s.last5Quote - s.quote) });
+    }
+    const lastStreak = s.list.slice(-6);
+    if (lastStreak.length >= 5 && lastStreak.every(t => t.attendance[p.id] === 'anwesend')) {
+      greenCandidates.push({ text: `${p.name} – ${lastStreak.length}x in Folge anwesend`, weight: 100 + lastStreak.length });
+    }
+  });
+
+  red.sort((a,b) => b.weight - a.weight);
+  yellow.sort((a,b) => b.weight - a.weight);
+  greenCandidates.sort((a,b) => b.weight - a.weight);
+
+  const green = greenCandidates.slice(0, 3).map(h => ({ text: h.text, level: 'green' }));
+  const remainingSlots = Math.max(0, 10 - green.length);
+  const redCountKept = Math.min(red.length, remainingSlots);
+  const negFinal = [...red, ...yellow].slice(0, remainingSlots).map((h, i) => ({
+    text: h.text,
+    level: i < redCountKept ? 'red' : 'yellow',
+  }));
+
+  return [...negFinal, ...green];
 }
 
 function teamQuote() {
@@ -736,7 +780,7 @@ const state = {
   route: 'dashboard',
   params: {},
   history: [],
-  playerFilter: { search: '', position: '' },
+  playerFilter: { search: '', position: '', sortBy: 'name' },
   trainingFilter: { period: 'all' },
   fussballImport: { raw: '', parsed: [] },
 };
@@ -863,7 +907,7 @@ function tabbar() {
 /* ------------------------------- Dashboard --------------------------------- */
 
 function viewDashboard() {
-  const warnings = computeWarnings();
+  const hints = computeHints();
   const focus = recommendedFocus();
   const openImportant = DB.notes.filter(n => !n.done && n.priority === 'Hoch').length;
   const tq = teamQuote();
@@ -892,11 +936,6 @@ function viewDashboard() {
       <div class="callout-body">${esc(focus)}</div>
     </div>` : ''}
 
-    ${warnings.length ? `<div class="callout callout--warn">
-      <div class="callout-title">Hinweise (${warnings.length})</div>
-      <ul class="warn-list">${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>
-    </div>` : ''}
-
     <div class="big-nav">
       <button class="big-btn" data-nav="trainingList">📋<span>Training</span></button>
       <button class="big-btn" data-nav="teams">⚽<span>Teams erstellen</span></button>
@@ -905,6 +944,11 @@ function viewDashboard() {
       <button class="big-btn" data-nav="notes">📝<span>Notizen</span></button>
       <button class="big-btn" data-nav="backup">💾<span>Backup</span></button>
     </div>
+
+    ${hints.length ? `<div class="callout callout--hints">
+      <div class="callout-title">Hinweise (${hints.length})</div>
+      <ul class="hint-list">${hints.map(h => `<li class="hint-item hint-${h.level}">${esc(h.text)}</li>`).join('')}</ul>
+    </div>` : ''}
   </main>
   ${tabbar()}`;
 }
@@ -1148,6 +1192,12 @@ function openTeamMoveSheet(trainingId, playerId, fromIndex) {
 
 /* ------------------------------ Spieler -------------------------------------- */
 
+function matchQuoteValue(playerId) {
+  const ms = matchStats(playerId);
+  if (ms.imKader === 0) return -1;
+  return Math.round((ms.startelf / ms.imKader) * 100);
+}
+
 function viewPlayers() {
   let players = DB.players.slice();
   const f = state.playerFilter;
@@ -1158,7 +1208,27 @@ function viewPlayers() {
   if (f.position) {
     players = players.filter(p => p.posPrimary === f.position || p.posSecondary === f.position);
   }
-  players.sort((a,b) => (b.active - a.active) || a.name.localeCompare(b.name, 'de'));
+  const sortBy = f.sortBy || 'name';
+  players.sort((a, b) => {
+    const activeDiff = (b.active - a.active);
+    if (activeDiff !== 0) return activeDiff;
+    if (sortBy === 'position') {
+      const ga = GROUP_ORDER.indexOf(GROUP_OF[a.posPrimary]);
+      const gb = GROUP_ORDER.indexOf(GROUP_OF[b.posPrimary]);
+      if (ga !== gb) return ga - gb;
+      if (a.posPrimary !== b.posPrimary) return a.posPrimary.localeCompare(b.posPrimary);
+      return a.name.localeCompare(b.name, 'de');
+    }
+    if (sortBy === 'trainingQuote') {
+      const qa = playerStats(a.id).total ? playerStats(a.id).quote : -1;
+      const qb = playerStats(b.id).total ? playerStats(b.id).quote : -1;
+      return qb - qa || a.name.localeCompare(b.name, 'de');
+    }
+    if (sortBy === 'matchQuote') {
+      return matchQuoteValue(b.id) - matchQuoteValue(a.id) || a.name.localeCompare(b.name, 'de');
+    }
+    return a.name.localeCompare(b.name, 'de');
+  });
 
   return `
   ${header('Spieler')}
@@ -1172,10 +1242,19 @@ function viewPlayers() {
         ${POSITIONS.map(pos => `<option value="${pos}" ${f.position===pos?'selected':''}>${pos}</option>`).join('')}
       </select>
     </div>
+    <div class="filter-row">
+      <select id="playerSortBy">
+        <option value="name" ${sortBy==='name'?'selected':''}>Sortieren: Name (A-Z)</option>
+        <option value="position" ${sortBy==='position'?'selected':''}>Sortieren: Position</option>
+        <option value="trainingQuote" ${sortBy==='trainingQuote'?'selected':''}>Sortieren: Trainingsbeteiligung</option>
+        <option value="matchQuote" ${sortBy==='matchQuote'?'selected':''}>Sortieren: Spielbeteiligung</option>
+      </select>
+    </div>
 
     <div class="list">
       ${players.length === 0 ? `<p class="empty">Keine Spieler gefunden.</p>` : players.map(p => {
         const s = playerStats(p.id);
+        const mq = matchQuoteValue(p.id);
         return `
         <div class="card card-tap ${!p.active ? 'card-inactive' : ''}" data-nav="playerProfile" data-params='{"id":"${p.id}"}'>
           <div class="player-card-row">
@@ -1183,7 +1262,7 @@ function viewPlayers() {
             <div>
               <div class="card-title">${esc(p.name)} ${!p.active ? '<span class="badge-off">inaktiv</span>' : ''}</div>
               <div class="card-sub">${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''} · Jg. ${p.jahrgang}</div>
-              <div class="card-sub">Beteiligung: ${s.total ? s.quote + ' %' : '–'} ${s.last5Quote != null ? `· Letzte 5: ${s.last5Quote} % ${s.trend}` : ''}</div>
+              <div class="card-sub">Training: ${s.total ? s.quote + ' %' : '–'} ${s.last5Quote != null ? `(Letzte 5: ${s.last5Quote} % ${s.trend})` : ''} · Spiel: ${mq >= 0 ? mq + ' %' : '–'}</div>
             </div>
           </div>
         </div>`;
@@ -1655,6 +1734,10 @@ document.addEventListener('change', (e) => {
   }
   if (e.target.id === 'playerPosFilter') {
     state.playerFilter.position = e.target.value;
+    render();
+  }
+  if (e.target.id === 'playerSortBy') {
+    state.playerFilter.sortBy = e.target.value;
     render();
   }
   if (e.target.matches('[data-action="toggleImportRow"]')) {

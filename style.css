@@ -119,11 +119,18 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 /* ---------- Callouts ---------- */
 .callout { border-radius: var(--radius); padding: 14px; margin: 14px 0; }
 .callout--blue { background: var(--blue-light); }
-.callout--warn { background: #fff7ed; border: 1px solid #fed7aa; }
+.callout--hints { background: var(--card); border: 1px solid var(--border); }
 .callout-title { font-weight: 700; margin-bottom: 6px; font-size: 14px; }
 .callout-body { font-size: 15px; font-weight: 600; }
-.warn-list { margin: 0; padding-left: 18px; font-size: 14px; }
-.warn-list li { margin-bottom: 4px; }
+
+.hint-list { margin: 0; padding: 0; list-style: none; }
+.hint-item {
+  font-size: 13.5px; padding: 7px 0 7px 12px; border-left: 3px solid var(--border);
+  margin-bottom: 4px; line-height: 1.4;
+}
+.hint-item.hint-red { border-left-color: var(--red); }
+.hint-item.hint-yellow { border-left-color: var(--yellow); }
+.hint-item.hint-green { border-left-color: var(--green); }
 
 /* ---------- Cards / lists ---------- */
 .list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
