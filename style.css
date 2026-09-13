@@ -205,6 +205,7 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 }
 .segmented button.active { background: var(--blue); color: #fff; border-color: var(--blue); }
 .segmented.small button { padding: 6px 10px; font-size: 13px; }
+.segmented--3 button { padding: 10px 4px; font-size: 12.5px; }
 
 .details-block { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); padding: 10px 14px; margin: 12px 0; }
 .details-block summary { font-weight: 700; padding: 4px 0; }
@@ -224,6 +225,7 @@ button:active { transform: scale(0.96); opacity: 0.85; }
   padding: 7px 6px; font-size: 14px; display: flex; align-items: center; gap: 8px; border-radius: 8px;
 }
 .team-player-tap:active { background: rgba(255,255,255,0.18); }
+.team-player-tap.is-selected { background: rgba(255,255,255,0.28); outline: 2px solid #fff; outline-offset: -2px; }
 .move-hint { margin-left: auto; opacity: 0.6; font-size: 13px; }
 .team-empty { font-size: 13px; opacity: 0.7; padding: 4px 6px; }
 .team-hint { margin-top: 6px; }
@@ -307,10 +309,6 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 }
 .pitch-pos { font-size: 10px; font-weight: 800; color: var(--blue); }
 .pitch-name { font-size: 11px; font-weight: 700; color: var(--text); line-height: 1.2; }
-
-/* ---------- Minutes ---------- */
-.minutes-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
-.minutes-input { width: 70px; padding: 8px; border-radius: 10px; border: 1px solid var(--border); text-align: center; }
 
 /* ---------- Bottom sheet ---------- */
 .sheet-overlay {

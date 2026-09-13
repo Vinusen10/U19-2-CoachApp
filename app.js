@@ -8,7 +8,7 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -23,6 +23,13 @@ const MONTH_NAMES = ['Januar','Februar','März','April','Mai','Juni','Juli','Aug
 
 const STATUS = {
   anwesend:       { label: 'Da',            cls: 'st-da' },
+  abgesagt:       { label: 'Abgesagt',      cls: 'st-abgesagt' },
+  unentschuldigt: { label: 'Unentsch.',     cls: 'st-unentsch' },
+  offen:          { label: 'Offen',         cls: 'st-offen' },
+};
+
+const MATCH_STATUS = {
+  zugesagt:       { label: 'Zugesagt',      cls: 'st-da' },
   abgesagt:       { label: 'Abgesagt',      cls: 'st-abgesagt' },
   unentschuldigt: { label: 'Unentsch.',     cls: 'st-unentsch' },
   offen:          { label: 'Offen',         cls: 'st-offen' },
@@ -218,6 +225,17 @@ function migrate(db) {
     if (typeof m.completed !== 'boolean') {
       m.completed = !!(m.kader && m.kader.length > 0);
     }
+    // Zusagen früher als true/false gespeichert, jetzt als Status wie beim Training.
+    m.availability = m.availability || {};
+    Object.keys(m.availability).forEach(pid => {
+      const v = m.availability[pid];
+      if (v === true) m.availability[pid] = 'zugesagt';
+      else if (v === false) m.availability[pid] = 'abgesagt';
+      else if (typeof v !== 'string') m.availability[pid] = 'offen';
+    });
+    // Spielminuten-Erfassung wurde entfernt.
+    delete m.minutes;
+    delete m.duration;
     return m;
   });
   // Zukünftige Migrationen hier einhängen, z.B.:
@@ -537,20 +555,15 @@ function trainingHistorySVG(list, playerId, width, height) {
 }
 
 // Ein Spieltag zählt erst in der Statistik, wenn der Trainer ihn manuell als
-// abgeschlossen markiert hat (Kader/Startelf/Spielzeit final) - sonst würden geplante,
+// abgeschlossen markiert hat (Kader/Startelf final) - sonst würden geplante,
 // aber noch nicht gespielte Spieltage die Einsatzstatistik verfälschen.
 function matchStats(playerId) {
   const matches = DB.matches.filter(m => m.completed && (m.kader || []).includes(playerId));
-  let startelf = 0, eingewechselt = 0, bankOhne = 0, minuten = 0;
+  let startelf = 0;
   matches.forEach(m => {
-    const isStarter = Object.values(m.startElf || {}).includes(playerId);
-    const min = (m.minutes && m.minutes[playerId]) || 0;
-    minuten += min;
-    if (isStarter) startelf++;
-    else if (min > 0) eingewechselt++;
-    else bankOhne++;
+    if (Object.values(m.startElf || {}).includes(playerId)) startelf++;
   });
-  return { imKader: matches.length, startelf, eingewechselt, bankOhne, minuten };
+  return { imKader: matches.length, startelf, bank: matches.length - startelf };
 }
 
 // Erzeugt kategorisierte Hinweise (rot = sehr bedenklich, gelb = weniger bedenklich,
@@ -733,6 +746,63 @@ function generateTeamsBySkill(presentIds, overrideMap) {
   return { strong, weak };
 }
 
+// Teilt anwesende Spieler in "Offensive" (Stürmer, 10er/OM, Flügelspieler LM/RM, ein
+// angriffslastiger 6er) gegen "Defensive" (komplette Abwehr, Torwart, ein
+// defensiverer 6er) auf. Der Rest wird positionsgerecht auf beide Teams verteilt,
+// damit am Ende zwei vollständige, spielbare Mannschaften entstehen.
+function generateOffenseDefenseTeams(presentIds, overrideMap) {
+  const players = presentIds.map(playerById).filter(Boolean);
+  const posOf = p => effectivePosition(p, overrideMap);
+
+  const attackPositions = ['ST', 'LF', 'RF', 'OM', 'LM', 'RM'];
+  const defensePositions = ['IV', 'LV', 'RV'];
+
+  const usedIds = new Set();
+  const teamOffense = [];
+  const teamDefense = [];
+
+  // Torhüter: einer bevorzugt zur Defensive (klassische Zuordnung), zweiter zur
+  // Offensive (damit auch dieses Team einen TW hat). Weitere Ersatz-TW (selten)
+  // landen im Restpool.
+  const tws = sortByStrengthDesc(players.filter(p => posOf(p) === 'TW'));
+  if (tws[0]) { teamDefense.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' }); usedIds.add(tws[0].id); }
+  if (tws[1]) { teamOffense.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' }); usedIds.add(tws[1].id); }
+
+  // Kernspieler der jeweiligen Gruppe direkt zuordnen.
+  players.forEach(p => {
+    if (usedIds.has(p.id)) return;
+    const pos = posOf(p);
+    if (attackPositions.includes(pos)) { teamOffense.push({ id: p.id, name: p.name, pos }); usedIds.add(p.id); }
+    else if (defensePositions.includes(pos)) { teamDefense.push({ id: p.id, name: p.name, pos }); usedIds.add(p.id); }
+  });
+
+  // Die "6er" (DM): einer mit angriffslastiger Sekundärposition zur Offensive, einer
+  // mit defensiver Sekundärposition zur Defensive. Rest nach Stärke sortiert später
+  // im allgemeinen Restpool verteilt.
+  const dms = sortByStrengthDesc(players.filter(p => !usedIds.has(p.id) && posOf(p) === 'DM'));
+  let attackDM = dms.find(p => p.posSecondary && attackPositions.includes(p.posSecondary));
+  let defenseDM = dms.find(p => p !== attackDM && p.posSecondary && defensePositions.includes(p.posSecondary));
+  if (!attackDM && dms.length) attackDM = dms.find(p => p !== defenseDM);
+  if (!defenseDM && dms.length) defenseDM = dms.find(p => p !== attackDM);
+  if (attackDM) { teamOffense.push({ id: attackDM.id, name: attackDM.name, pos: 'DM' }); usedIds.add(attackDM.id); }
+  if (defenseDM) { teamDefense.push({ id: defenseDM.id, name: defenseDM.name, pos: 'DM' }); usedIds.add(defenseDM.id); }
+
+  // Rest (übrige DMs, ZM, überzählige TW, ...) positionsgerecht auf beide Teams
+  // verteilen, damit beide Seiten eine vollständige Aufstellung bekommen. Das
+  // jeweils kleinere Team wird zuerst aufgefüllt.
+  const rest = players.filter(p => !usedIds.has(p.id));
+  GROUP_ORDER.forEach(group => {
+    const inGroup = sortByStrengthDesc(rest.filter(p => GROUP_OF[posOf(p)] === group));
+    inGroup.forEach(p => {
+      const entry = { id: p.id, name: p.name, pos: posOf(p) };
+      if (teamOffense.length <= teamDefense.length) teamOffense.push(entry);
+      else teamDefense.push(entry);
+    });
+  });
+
+  return { offense: teamOffense, defense: teamDefense };
+}
+
 /* ------------------------- Formation / Startelf --------------------------- */
 
 function slotScore(slot, player, overridePos) {
@@ -770,7 +840,10 @@ function autoArrangeStartXI(kaderIds, formationKey) {
 
 function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
   const formation = FORMATIONS[formationKey];
-  const candidates = activePlayers().filter(p => !availabilityMap || availabilityMap[p.id] !== false);
+  const candidates = activePlayers().filter(p => {
+    const av = availabilityMap && availabilityMap[p.id];
+    return av !== 'abgesagt' && av !== 'unentschuldigt';
+  });
   const ranked = candidates.map(p => {
     const s = playerStats(p.id);
     return { p, quote: s.quote, unentsch: s.unentschuldigt, total: s.total };
@@ -805,6 +878,7 @@ const state = {
   playerFilter: { search: '', position: '', sortBy: 'name' },
   trainingFilter: { period: 'all' },
   fussballImport: { raw: '', parsed: [] },
+  teamSwapSelection: null,
 };
 
 function leavingRouteHook(nextRoute) {
@@ -1105,11 +1179,13 @@ function viewTeams(trainingId) {
     ${t.teamGen.numTeams === 2 ? `
     <div class="select-row">
       <label>Verteilung</label>
-      <div class="segmented">
+      <div class="segmented segmented--3">
         <button class="${t.teamGen.mode==='strength'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="strength">Nach Stärke</button>
+        <button class="${t.teamGen.mode==='offense_defense'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="offense_defense">Off. / Def.</button>
         <button class="${t.teamGen.mode==='random'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="random">Zufällig</button>
       </div>
       ${t.teamGen.mode === 'strength' ? `<p class="muted small-note">Team A = stärkere Gruppe, Team B = schwächere Gruppe – nach Trainings- und Spielbeteiligung, je Position getrennt aufgeteilt. Team B bekommt bevorzugt einen Torhüter.</p>` : ''}
+      ${t.teamGen.mode === 'offense_defense' ? `<p class="muted small-note">Team A = Offensive (Stürmer, 10er, Flügelspieler, ein Angriffs-6er), Team B = Defensive (komplette Abwehr, Torwart, ein Abwehr-6er). Der Rest wird positionsgerecht aufgefüllt, damit beide Teams eine vollständige Aufstellung haben.</p>` : ''}
     </div>` : ''}
 
     ${withSecondary.length ? `
@@ -1140,22 +1216,26 @@ function viewTeams(trainingId) {
 
 function renderTeamsResult(teams, trainingId, labels) {
   const letters = ['A','B','C'];
+  const sel = state.teamSwapSelection;
   return `<div class="team-grid">
     ${teams.map((team, i) => {
       const title = labels && labels[i] ? `Team ${letters[i]} · ${labels[i]}` : `Team ${letters[i]}`;
       return `
       <div class="team-card team-${letters[i]}">
         <div class="team-head">${title} <span class="team-count">${team.length}</span></div>
-        ${team.map(pl => `
-          <button class="team-player team-player-tap" data-action="moveTeamPlayer" data-id="${trainingId}" data-player="${pl.id}" data-from="${i}">
+        ${team.map(pl => {
+          const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === i && sel.playerId === pl.id;
+          return `
+          <button class="team-player team-player-tap ${isSelected ? 'is-selected' : ''}" data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${i}">
             <span class="pos-chip">${pl.pos}</span>${esc(pl.name)}
-            <span class="move-hint">⇄</span>
-          </button>`).join('')}
+            <span class="move-hint">${isSelected ? '✓' : '⇄'}</span>
+          </button>`;
+        }).join('')}
         ${team.length === 0 ? `<div class="team-empty">–</div>` : ''}
       </div>`;
     }).join('')}
   </div>
-  <p class="muted team-hint">Tipp: Auf einen Spieler tippen, um ihn in ein anderes Team zu verschieben.</p>`;
+  <p class="muted team-hint">${sel ? 'Jetzt einen Spieler im anderen Team antippen, um zu tauschen (oder nochmal antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen Spieler im anderen Team antippen – beide tauschen die Seite.'}</p>`;
 }
 
 function renderRotation() {
@@ -1181,38 +1261,6 @@ function renderRotation() {
     <div class="muted" id="roundLabel">Runde 1</div>
   </div>`;
 }
-
-function openTeamMoveSheet(trainingId, playerId, fromIndex) {
-  const t = DB.trainings.find(x => x.id === trainingId);
-  const teams = t.teamGen.teams;
-  const letters = ['A','B','C'];
-  const player = teams[fromIndex].find(p => p.id === playerId);
-  if (!player) return;
-
-  const overlay = document.createElement('div');
-  overlay.className = 'sheet-overlay';
-  overlay.innerHTML = `
-    <div class="sheet">
-      <div class="sheet-head">${esc(player.name)} verschieben<button class="icon-btn" id="sheetClose">✕</button></div>
-      <div class="sheet-list">
-        ${teams.map((team, i) => i === fromIndex ? '' : `
-          <button class="sheet-item" data-move-to="${i}">Zu Team ${letters[i]} <span class="muted">(${team.length} Spieler)</span></button>
-        `).join('')}
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
-    const moveBtn = e.target.closest('[data-move-to]');
-    if (!moveBtn) return;
-    const toIndex = parseInt(moveBtn.dataset.moveTo, 10);
-    teams[fromIndex] = teams[fromIndex].filter(p => p.id !== playerId);
-    teams[toIndex].push(player);
-    overlay.remove();
-    saveDB(); render();
-  });
-}
-
 /* ------------------------------ Spieler -------------------------------------- */
 
 function matchQuoteValue(playerId) {
@@ -1407,8 +1455,7 @@ function viewPlayerProfile(id) {
 
     <div class="card">
       <div class="card-title">Spieleinsätze</div>
-      <div class="card-sub">${m.imKader}x im Kader · ${m.startelf}x Startelf · ${m.eingewechselt}x eingewechselt · ${m.bankOhne}x Bank ohne Einsatz</div>
-      <div class="card-sub">${m.minuten} Gesamtspielminuten</div>
+      <div class="card-sub">${m.imKader}x im Kader · ${m.startelf}x Startelf · ${m.bank}x Bank</div>
     </div>
 
     <form class="form" data-form="playerProfileExtra" data-id="${p.id}">
@@ -1603,6 +1650,7 @@ function viewMatchDetail(id) {
   const formation = FORMATIONS[m.formation];
   const kaderPlayers = (m.kader||[]).map(playerById).filter(Boolean);
   const benchIds = kaderPlayers.filter(p => !Object.values(m.startElf||{}).includes(p.id)).map(p=>p.id);
+  const zugesagtCount = activePlayers().filter(p => (m.availability[p.id] || 'offen') === 'zugesagt').length;
 
   return `
   ${header('Spieltag', 'matchList')}
@@ -1611,7 +1659,6 @@ function viewMatchDetail(id) {
       <label>Datum</label><input name="date" type="date" value="${m.date}">
       <label>Gegner</label><input name="opponent" value="${esc(m.opponent||'')}">
       <label>Kadergröße</label><input name="kaderSize" type="number" min="11" max="30" value="${m.kaderSize}">
-      <label>Spieldauer (Min)</label><input name="duration" type="number" value="${m.duration||90}">
       <label>Formation</label>
       <select name="formation">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===m.formation?'selected':''}>${f}</option>`).join('')}</select>
       <button class="btn btn-block" type="submit">Übernehmen</button>
@@ -1622,19 +1669,26 @@ function viewMatchDetail(id) {
         <input type="checkbox" data-action="toggleMatchCompleted" data-id="${m.id}" ${m.completed?'checked':''}>
         Spieltag abgeschlossen
       </label>
-      <p class="muted small-note">Erst wenn hier ein Haken gesetzt ist, fließt dieser Spieltag in die Einsatzstatistik der Spieler ein (Kader-/Startelf-/Spielzeit-Zählung im Profil). So verfälschen geplante, aber noch nicht gespielte Spieltage nichts.</p>
+      <p class="muted small-note">Erst wenn hier ein Haken gesetzt ist, fließt dieser Spieltag in die Einsatzstatistik der Spieler ein (Kader-/Startelf-Zählung im Profil). So verfälschen geplante, aber noch nicht gespielte Spieltage nichts.</p>
     </div>
 
+    <div class="section-head"><span>Zusagen (${zugesagtCount}/${activePlayers().length})</span></div>
+    <div class="row-actions">
+      <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="zugesagt">Alle zugesagt</button>
+      <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="offen">Alle offen</button>
+    </div>
     <details class="details-block" ${m.kader && m.kader.length ? '' : 'open'}>
-      <summary>Verfügbarkeit (${activePlayers().filter(p=>m.availability[p.id]!==false).length}/${activePlayers().length} verfügbar)</summary>
-      <div class="list">
+      <summary>Zusagen einzeln erfassen</summary>
+      <div class="attend-list">
         ${activePlayers().slice().sort((a,b)=>a.name.localeCompare(b.name,'de')).map(p => {
-          const avail = m.availability[p.id] !== false;
+          const s = m.availability[p.id] || 'offen';
           return `<div class="attend-row">
             <div class="attend-name">${esc(p.name)}</div>
             <div class="attend-btns">
-              <button class="status-btn st-da ${avail?'is-active':''}" data-action="setAvailability" data-id="${m.id}" data-player="${p.id}" data-val="true">Verfügbar</button>
-              <button class="status-btn st-unentsch ${!avail?'is-active':''}" data-action="setAvailability" data-id="${m.id}" data-player="${p.id}" data-val="false">Nicht dabei</button>
+              ${Object.entries(MATCH_STATUS).map(([key, meta]) => `
+                <button class="status-btn ${meta.cls} ${s === key ? 'is-active' : ''}"
+                  data-action="setMatchAvailability" data-id="${m.id}" data-player="${p.id}" data-status="${key}">${meta.label}</button>
+              `).join('')}
             </div>
           </div>`;
         }).join('')}
@@ -1662,20 +1716,6 @@ function viewMatchDetail(id) {
     <div class="section-head"><span>Bank</span></div>
     <div class="chip-list">
       ${benchIds.map(id => `<span class="chip">${esc(playerById(id).name)}</span>`).join('') || '<span class="muted">–</span>'}
-    </div>
-
-    <div class="section-head"><span>Spielzeit</span></div>
-    <div class="row-actions">
-      <button class="btn" data-action="fillMinutes" data-id="${m.id}">Startelf voll / Bank 0</button>
-    </div>
-    <div class="minutes-list">
-      ${kaderPlayers.map(p => `
-        <div class="attend-row">
-          <div class="attend-name">${esc(p.name)}</div>
-          <input class="minutes-input" type="number" min="0" max="${m.duration||90}"
-            value="${(m.minutes && m.minutes[p.id]) || 0}"
-            data-action="setMinutes" data-id="${m.id}" data-player="${p.id}">
-        </div>`).join('')}
     </div>
 
     <button class="btn btn-block" data-action="copyMatchWhatsApp" data-id="${m.id}">📋 Für WhatsApp kopieren</button>
@@ -1752,12 +1792,6 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-action="chooseTraining"]')) {
     nav('teams', { id: e.target.value });
-  }
-  if (e.target.matches('[data-action="setMinutes"]')) {
-    const m = DB.matches.find(x => x.id === e.target.dataset.id);
-    m.minutes = m.minutes || {};
-    m.minutes[e.target.dataset.player] = Math.max(0, parseInt(e.target.value) || 0);
-    saveDB();
   }
   if (e.target.matches('[data-action="toggleMatchCompleted"]')) {
     const m = DB.matches.find(x => x.id === e.target.dataset.id);
@@ -1880,7 +1914,6 @@ document.addEventListener('submit', (e) => {
     m.date = fd.get('date');
     m.opponent = fd.get('opponent');
     m.kaderSize = Math.max(11, parseInt(fd.get('kaderSize')) || 18);
-    m.duration = parseInt(fd.get('duration')) || 90;
     if (newFormation !== m.formation) {
       m.formation = newFormation;
       const kader = m.kader || [];
@@ -1983,9 +2016,10 @@ function handleAction(btn, e) {
   else if (action === 'setNumTeams') {
     const t = DB.trainings.find(x => x.id === id);
     t.teamGen.numTeams = parseInt(btn.dataset.num, 10);
-    if (t.teamGen.numTeams !== 2) t.teamGen.mode = 'random'; // Stärke-Split nur für 2 Teams definiert
+    if (t.teamGen.numTeams !== 2) t.teamGen.mode = 'random'; // Stärke-/Off-Def-Split nur für 2 Teams definiert
     t.teamGen.teams = null;
     t.teamGen.teamLabels = null;
+    state.teamSwapSelection = null;
     saveDB(); render();
   }
   else if (action === 'setTeamMode') {
@@ -1993,6 +2027,7 @@ function handleAction(btn, e) {
     t.teamGen.mode = btn.dataset.mode;
     t.teamGen.teams = null;
     t.teamGen.teamLabels = null;
+    state.teamSwapSelection = null;
     saveDB(); render();
   }
   else if (action === 'setOverride') {
@@ -2003,10 +2038,15 @@ function handleAction(btn, e) {
   else if (action === 'drawTeams') {
     const t = DB.trainings.find(x => x.id === id);
     const presentIds = Object.entries(t.attendance).filter(([,s]) => s === 'anwesend').map(([pid]) => pid);
+    state.teamSwapSelection = null;
     if (t.teamGen.numTeams === 2 && t.teamGen.mode === 'strength') {
       const { strong, weak } = generateTeamsBySkill(presentIds, t.teamGen.posOverride);
       t.teamGen.teams = [strong, weak];
       t.teamGen.teamLabels = ['Stärker', 'Schwächer'];
+    } else if (t.teamGen.numTeams === 2 && t.teamGen.mode === 'offense_defense') {
+      const { offense, defense } = generateOffenseDefenseTeams(presentIds, t.teamGen.posOverride);
+      t.teamGen.teams = [offense, defense];
+      t.teamGen.teamLabels = ['Offensive', 'Defensive'];
     } else {
       t.teamGen.teams = generateTeams(presentIds, t.teamGen.numTeams, t.teamGen.posOverride);
       t.teamGen.teamLabels = null;
@@ -2025,8 +2065,41 @@ function handleAction(btn, e) {
     });
     copyToClipboard(text.trim());
   }
-  else if (action === 'moveTeamPlayer') {
-    openTeamMoveSheet(id, btn.dataset.player, parseInt(btn.dataset.from, 10));
+  else if (action === 'teamPlayerClick') {
+    const trainingId = id;
+    const teamIdx = parseInt(btn.dataset.teamIdx, 10);
+    const playerId = btn.dataset.player;
+    const sel = state.teamSwapSelection;
+
+    if (!sel || sel.trainingId !== trainingId) {
+      state.teamSwapSelection = { trainingId, teamIdx, playerId };
+      render();
+      return;
+    }
+    if (sel.playerId === playerId && sel.teamIdx === teamIdx) {
+      state.teamSwapSelection = null;
+      render();
+      return;
+    }
+    if (sel.teamIdx === teamIdx) {
+      state.teamSwapSelection = { trainingId, teamIdx, playerId };
+      render();
+      return;
+    }
+    const t = DB.trainings.find(x => x.id === trainingId);
+    const teams = t.teamGen.teams;
+    const teamA = teams[sel.teamIdx];
+    const teamB = teams[teamIdx];
+    const idxA = teamA.findIndex(p => p.id === sel.playerId);
+    const idxB = teamB.findIndex(p => p.id === playerId);
+    state.teamSwapSelection = null;
+    if (idxA === -1 || idxB === -1) { render(); return; }
+    const tmp = teamA[idxA];
+    teamA[idxA] = teamB[idxB];
+    teamB[idxB] = tmp;
+    saveDB();
+    render();
+    toast('Spieler getauscht ✓');
   }
   else if (action === 'timerStart') { startTimer(); }
   else if (action === 'timerPause') { pauseTimer(); }
@@ -2098,15 +2171,21 @@ function handleAction(btn, e) {
   else if (action === 'newMatch') {
     const m = {
       id: uid('m'), date: todayISO(), opponent: '', formation: '4-3-3',
-      kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {}, completed: false,
+      kaderSize: 18, availability: {}, kader: [], startElf: {}, completed: false,
     };
+    activePlayers().forEach(p => { m.availability[p.id] = 'offen'; });
     DB.matches.push(m);
     saveDB();
     nav('matchDetail', { id: m.id });
   }
-  else if (action === 'setAvailability') {
+  else if (action === 'setMatchAvailability') {
     const m = DB.matches.find(x => x.id === id);
-    m.availability[btn.dataset.player] = btn.dataset.val === 'true';
+    m.availability[btn.dataset.player] = btn.dataset.status;
+    saveDB(); render();
+  }
+  else if (action === 'allMatchAvailability') {
+    const m = DB.matches.find(x => x.id === id);
+    activePlayers().forEach(p => { m.availability[p.id] = btn.dataset.status; });
     saveDB(); render();
   }
   else if (action === 'autoKader') {
@@ -2116,7 +2195,6 @@ function handleAction(btn, e) {
     const result = autoSelectKaderAndXI(m.formation, m.kaderSize, m.availability);
     m.kader = result.kaderIds;
     m.startElf = result.startElf;
-    m.minutes = m.minutes || {};
     saveDB(); render();
   }
   else if (action === 'addToKader') {
@@ -2129,7 +2207,6 @@ function handleAction(btn, e) {
     const m = DB.matches.find(x => x.id === id);
     m.kader = (m.kader||[]).filter(pid => pid !== btn.dataset.player);
     Object.keys(m.startElf||{}).forEach(slot => { if (m.startElf[slot] === btn.dataset.player) delete m.startElf[slot]; });
-    if (m.minutes) delete m.minutes[btn.dataset.player];
     saveDB(); render();
   }
   else if (action === 'autoArrange') {
@@ -2140,13 +2217,6 @@ function handleAction(btn, e) {
   }
   else if (action === 'openSlot') {
     openSlotPicker(id, btn.dataset.slot);
-  }
-  else if (action === 'fillMinutes') {
-    const m = DB.matches.find(x => x.id === id);
-    m.minutes = m.minutes || {};
-    const starters = new Set(Object.values(m.startElf||{}));
-    (m.kader||[]).forEach(pid => { m.minutes[pid] = starters.has(pid) ? (m.duration||90) : 0; });
-    saveDB(); render();
   }
   else if (action === 'copyMatchWhatsApp') {
     const m = DB.matches.find(x => x.id === id);
@@ -2200,9 +2270,11 @@ function handleAction(btn, e) {
     let count = 0;
     rows.forEach(r => {
       if (existingDates.has(r.date)) return;
+      const availability = {};
+      activePlayers().forEach(p => { availability[p.id] = 'offen'; });
       DB.matches.push({
         id: uid('m'), date: r.date, opponent: r.opponent || '', formation: '4-3-3',
-        kaderSize: 18, duration: 90, availability: {}, kader: [], startElf: {}, minutes: {}, completed: false,
+        kaderSize: 18, availability, kader: [], startElf: {}, completed: false,
       });
       existingDates.add(r.date);
       count++;
@@ -2355,12 +2427,19 @@ function updateTimerDisplay() {
 
 function openSlotPicker(matchId, slotKey) {
   const m = DB.matches.find(x => x.id === matchId);
-  const kaderPlayers = (m.kader||[]).map(playerById).filter(Boolean);
+  const formation = FORMATIONS[m.formation];
+  const slot = formation.slots.find(s => s.key === slotKey);
+  const allKaderPlayers = (m.kader||[]).map(playerById).filter(Boolean);
+  let kaderPlayers = allKaderPlayers.filter(p => slotScore(slot, p) > 0);
+  const usedFallback = kaderPlayers.length === 0 && allKaderPlayers.length > 0;
+  if (usedFallback) kaderPlayers = allKaderPlayers;
+
   const overlay = document.createElement('div');
   overlay.className = 'sheet-overlay';
   overlay.innerHTML = `
     <div class="sheet">
-      <div class="sheet-head">Spieler für ${slotKey} wählen<button class="icon-btn" id="sheetClose">✕</button></div>
+      <div class="sheet-head">Spieler für ${slot.label} wählen<button class="icon-btn" id="sheetClose">✕</button></div>
+      ${usedFallback ? `<p class="muted small-note">Kein Spieler im Kader passt auf diese Position – zeige den gesamten Kader.</p>` : ''}
       <div class="sheet-list">
         ${kaderPlayers.map(p => {
           const currentSlot = Object.entries(m.startElf||{}).find(([,pid]) => pid === p.id);
