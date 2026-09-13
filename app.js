@@ -33,6 +33,7 @@ const MATCH_STATUS = {
   abgesagt:       { label: 'Abgesagt',      cls: 'st-abgesagt' },
   unentschuldigt: { label: 'Unentsch.',     cls: 'st-unentsch' },
   offen:          { label: 'Offen',         cls: 'st-offen' },
+  nichtImKader:   { label: 'Nicht im Kader', cls: 'st-nichtimkader' },
 };
 
 // Formationsdefinitionen mit grafischen Positionen (x/y in %, y=0 Angriff, y=100 Torwart)
@@ -558,12 +559,17 @@ function trainingHistorySVG(list, playerId, width, height) {
 // abgeschlossen markiert hat (Kader/Startelf final) - sonst würden geplante,
 // aber noch nicht gespielte Spieltage die Einsatzstatistik verfälschen.
 function matchStats(playerId) {
-  const matches = DB.matches.filter(m => m.completed && (m.kader || []).includes(playerId));
-  let startelf = 0;
-  matches.forEach(m => {
-    if (Object.values(m.startElf || {}).includes(playerId)) startelf++;
+  const completed = DB.matches.filter(m => m.completed);
+  let imKader = 0, startelf = 0, nichtImKader = 0;
+  completed.forEach(m => {
+    if ((m.kader || []).includes(playerId)) {
+      imKader++;
+      if (Object.values(m.startElf || {}).includes(playerId)) startelf++;
+    } else if ((m.availability || {})[playerId] === 'nichtImKader') {
+      nichtImKader++;
+    }
   });
-  return { imKader: matches.length, startelf, bank: matches.length - startelf };
+  return { imKader, startelf, bank: imKader - startelf, nichtImKader };
 }
 
 // Erzeugt kategorisierte Hinweise (rot = sehr bedenklich, gelb = weniger bedenklich,
@@ -755,17 +761,16 @@ function playerStrengthScore(playerId) {
 }
 
 function sortByStrengthDesc(players) {
-  // Zufälliger Tiebreaker bei Gleichstand, damit "Neu auslosen" bei gleichauf liegenden
-  // Spielern trotzdem eine leichte Durchmischung bringt.
+  // Deterministisch (kein Zufalls-Tiebreaker mehr): "Nach Stärke" soll bei erneuter
+  // Berechnung (z.B. nach Positionsanpassung) nicht einfach neu durchmischen.
   return players
-    .map(p => ({ p, score: playerStrengthScore(p.id), rnd: Math.random() }))
-    .sort((a,b) => b.score - a.score || b.rnd - a.rnd)
-    .map(x => x.p);
+    .slice()
+    .sort((a,b) => playerStrengthScore(b.id) - playerStrengthScore(a.id) || a.name.localeCompare(b.name, 'de'));
 }
 
 // Teilt anwesende Spieler in eine stärkere und eine schwächere Gruppe auf, getrennt nach
 // Trainings-/Spielbeteiligung, aber je Positionsgruppe (Verteidigung/Mittelfeld/Sturm), damit
-// beide Gruppen möglichst eine sinnvolle Positionsverteilung behalten. Die schwächere Gruppe
+// beide Gruppen möglichst eine sinnvolle Positionsverteilung behalten. Die stärkere Gruppe
 // bekommt bevorzugt einen Torhüter, falls einer anwesend ist.
 function generateTeamsBySkill(presentIds, overrideMap) {
   const players = presentIds.map(playerById).filter(Boolean);
@@ -780,10 +785,10 @@ function generateTeamsBySkill(presentIds, overrideMap) {
   const weak = [];
 
   if (tws.length === 1) {
-    weak.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
+    strong.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
   } else if (tws.length >= 2) {
-    weak.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
-    strong.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' });
+    strong.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
+    weak.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' });
     outfield = outfield.concat(tws.slice(2));
   }
 
@@ -821,10 +826,10 @@ function last5Quote(playerId) {
   return s.last5Quote != null ? s.last5Quote : s.quote;
 }
 function sortByLast5Desc(players) {
+  // Deterministisch, aus demselben Grund wie sortByStrengthDesc.
   return players
-    .map(p => ({ p, score: last5Quote(p.id), rnd: Math.random() }))
-    .sort((a,b) => b.score - a.score || b.rnd - a.rnd)
-    .map(x => x.p);
+    .slice()
+    .sort((a,b) => last5Quote(b.id) - last5Quote(a.id) || a.name.localeCompare(b.name, 'de'));
 }
 
 // Team Offensive bekommt die BESTEN Angreifer (Stürmer/10er/Flügel) plus einen
@@ -957,7 +962,7 @@ function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
   const formation = FORMATIONS[formationKey];
   const candidates = activePlayers().filter(p => {
     const av = availabilityMap && availabilityMap[p.id];
-    return av !== 'abgesagt' && av !== 'unentschuldigt';
+    return av !== 'abgesagt' && av !== 'unentschuldigt' && av !== 'nichtImKader';
   });
   const ranked = candidates.map(p => {
     const s = playerStats(p.id);
@@ -1307,7 +1312,7 @@ function viewTeams(trainingId) {
         <button class="${t.teamGen.mode==='offense_defense'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="offense_defense">Off. / Def.</button>
         <button class="${t.teamGen.mode==='random'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="random">Zufällig</button>
       </div>
-      ${t.teamGen.mode === 'strength' ? `<p class="muted small-note">Team A = stärkere Gruppe, Team B = schwächere Gruppe – nach Trainings- und Spielbeteiligung, je Position getrennt aufgeteilt. Team B bekommt bevorzugt einen Torhüter.</p>` : ''}
+      ${t.teamGen.mode === 'strength' ? `<p class="muted small-note">Team A = stärkere Gruppe, Team B = schwächere Gruppe – nach Trainings- und Spielbeteiligung, je Position getrennt aufgeteilt. Team A bekommt bevorzugt den Torhüter.</p>` : ''}
       ${t.teamGen.mode === 'offense_defense' ? `<p class="muted small-note">Team A = die besten Offensivspieler (Stürmer, 10er, Flügel, ein Angriffs-6er), aufgefüllt mit den schwächeren Verteidigern. Team B = die beste Abwehr plus ein defensiver 6er, aufgefüllt mit den schwächeren Offensivspielern. Bewertung nach Beteiligung der letzten 5 Trainings – so spielen die guten Offensiv- gegen die guten Defensivspieler.</p>` : ''}
     </div>` : ''}
 
@@ -1324,10 +1329,14 @@ function viewTeams(trainingId) {
           </div>
         </div>`;
       }).join('')}
+      ${t.teamGen.teams ? `<p class="muted small-note">Änderung übernommen? Unten auf „Teams anpassen" tippen.</p>` : ''}
     </details>` : ''}
 
-    <button class="btn btn-primary btn-block" data-action="drawTeams" data-id="${t.id}" ${presentPlayers.length===0?'disabled':''}>Teams auslosen</button>
-    ${t.teamGen.teams ? `<button class="btn btn-block" data-action="drawTeams" data-id="${t.id}">🔀 Neu auslosen</button>` : ''}
+    <button class="btn btn-primary btn-block" data-action="drawTeams" data-id="${t.id}" ${presentPlayers.length===0?'disabled':''}>${
+      t.teamGen.teams
+        ? (t.teamGen.mode === 'random' ? '🔀 Neu auslosen' : 'Teams anpassen')
+        : (t.teamGen.mode === 'random' ? 'Teams auslosen' : 'Teams erstellen')
+    }</button>
     ${t.teamGen.teams ? `<button class="btn btn-block" data-action="copyTeamsWhatsApp" data-id="${t.id}">📋 Für WhatsApp kopieren</button>` : ''}
 
     ${teamsHtml}
@@ -1337,7 +1346,7 @@ function viewTeams(trainingId) {
   ${tabbar()}`;
 }
 
-function renderMiniPitch(team, trainingId, teamIdx, sel) {
+function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
   const lines = { FWD: [], MID: [], DM: [], DEF: [], TW: [] };
   team.forEach(pl => {
     if (pl.pos === 'DM') lines.DM.push(pl);
@@ -1358,14 +1367,14 @@ function renderMiniPitch(team, trainingId, teamIdx, sel) {
     players.forEach((pl, i) => {
       const x = ((i + 1) / (n + 1)) * 100;
       const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === teamIdx && sel.playerId === pl.id;
-      slots += `<button class="mini-slot ${isSelected ? 'is-selected' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
+      slots += `<button class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
         data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">
         <span class="mini-slot-pos">${pl.pos}</span>
         <span class="mini-slot-name">${esc(pl.name)}</span>
       </button>`;
     });
   });
-  return `<div class="mini-pitch">${slots}</div>`;
+  return `<div class="mini-pitch ${neutralStyle ? 'mini-pitch-neutral' : ''}">${slots}</div>`;
 }
 
 function renderTeamsResult(teams, trainingId, labels, neutral) {
@@ -1378,14 +1387,21 @@ function renderTeamsResult(teams, trainingId, labels, neutral) {
     html += `
     <div class="mini-pitch-block">
       <div class="mini-pitch-header ${colorClass[i]}">${title} <span class="team-count">${team.length}</span></div>
-      ${renderMiniPitch(team, trainingId, i, sel)}
+      ${renderMiniPitch(team, trainingId, i, sel, false)}
     </div>`;
   });
+  if (neutral && neutral.length) {
+    html += `
+    <div class="mini-pitch-block">
+      <div class="mini-pitch-header neutral-header">Neutral <span class="team-count">${neutral.length}</span></div>
+      ${renderMiniPitch(neutral, trainingId, 'neutral', sel, true)}
+    </div>`;
+  }
   html += '</div>';
   if (neutral && neutral.length) {
-    html += `<p class="neutral-row"><strong>Neutral</strong> (spielt bei der Mannschaft in Ballbesitz mit): ${neutral.map(p => esc(p.name)).join(', ')}</p>`;
+    html += `<p class="muted small-note">Neutral spielt bei der Mannschaft mit, die gerade den Ball hat – lässt sich genauso wie die anderen antippen und tauschen.</p>`;
   }
-  html += `<p class="muted team-hint">${sel ? 'Jetzt einen Spieler im anderen Team antippen, um zu tauschen (oder nochmal antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen Spieler im anderen Team antippen – beide tauschen die Seite.'}</p>`;
+  html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen: im selben Team tauscht ihr die Positionen, im anderen Team wechselt ihr die Seite (nochmal antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen zweiten – gleiches Team tauscht die Position, anderes Team tauscht die Seite.'}</p>`;
   return html;
 }
 
@@ -1596,7 +1612,6 @@ function viewPlayerProfile(id) {
           <div class="legend-item"><span class="legend-dot" style="background:#16a34a"></span>Anwesend: ${s.anwesend}</div>
           <div class="legend-item"><span class="legend-dot" style="background:#eab308"></span>Abgesagt: ${s.abgesagt}</div>
           <div class="legend-item"><span class="legend-dot" style="background:#dc2626"></span>Unentsch.: ${s.unentschuldigt}</div>
-          <div class="legend-item"><span class="legend-dot" style="background:#9ca3af"></span>Offen: ${s.offen}</div>
         </div>
       </div>
       <div class="chart-subtitle">Letzte ${Math.min(12, s.total)} Trainings</div>
@@ -1606,7 +1621,7 @@ function viewPlayerProfile(id) {
 
     <div class="card">
       <div class="card-title">Spieleinsätze</div>
-      <div class="card-sub">${m.imKader}x im Kader · ${m.startelf}x Startelf · ${m.bank}x Bank</div>
+      <div class="card-sub">${m.imKader}x im Kader · ${m.startelf}x Startelf · ${m.bank}x Bank${m.nichtImKader ? ` · ${m.nichtImKader}x nicht im Kader` : ''}</div>
     </div>
 
     <form class="form" data-form="playerProfileExtra" data-id="${p.id}">
@@ -2235,7 +2250,8 @@ function handleAction(btn, e) {
   }
   else if (action === 'teamPlayerClick') {
     const trainingId = id;
-    const teamIdx = parseInt(btn.dataset.teamIdx, 10);
+    const rawTeamIdx = btn.dataset.teamIdx;
+    const teamIdx = rawTeamIdx === 'neutral' ? 'neutral' : parseInt(rawTeamIdx, 10);
     const playerId = btn.dataset.player;
     const sel = state.teamSwapSelection;
 
@@ -2249,19 +2265,26 @@ function handleAction(btn, e) {
       render();
       return;
     }
-    if (sel.teamIdx === teamIdx) {
-      state.teamSwapSelection = { trainingId, teamIdx, playerId };
-      render();
-      return;
-    }
     const t = DB.trainings.find(x => x.id === trainingId);
-    const teams = t.teamGen.teams;
-    const teamA = teams[sel.teamIdx];
-    const teamB = teams[teamIdx];
+    const groupFor = idx => idx === 'neutral' ? (t.teamGen.neutral || (t.teamGen.neutral = [])) : t.teamGen.teams[idx];
+    const teamA = groupFor(sel.teamIdx);
+    const teamB = groupFor(teamIdx);
     const idxA = teamA.findIndex(p => p.id === sel.playerId);
     const idxB = teamB.findIndex(p => p.id === playerId);
     state.teamSwapSelection = null;
     if (idxA === -1 || idxB === -1) { render(); return; }
+
+    if (sel.teamIdx === teamIdx) {
+      // Gleiches Team: nur die Positionen der beiden Spieler tauschen.
+      const tmpPos = teamA[idxA].pos;
+      teamA[idxA].pos = teamB[idxB].pos;
+      teamB[idxB].pos = tmpPos;
+      saveDB();
+      render();
+      toast('Positionen getauscht ✓');
+      return;
+    }
+
     const tmp = teamA[idxA];
     teamA[idxA] = teamB[idxB];
     teamB[idxB] = tmp;

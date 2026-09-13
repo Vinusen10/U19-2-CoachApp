@@ -189,6 +189,7 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 .status-btn.st-abgesagt { background: var(--yellow-bg); color: var(--yellow); }
 .status-btn.st-unentsch { background: var(--red-bg); color: var(--red); }
 .status-btn.st-offen { background: var(--gray-bg); color: var(--gray); }
+.status-btn.st-nichtimkader { background: #ede4fb; color: #5b21b6; }
 .status-btn.is-active { border-color: currentColor; }
 
 /* ---------- Select / segmented ---------- */
@@ -239,7 +240,10 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 .mini-slot.is-selected { outline: 2px solid #fff; box-shadow: 0 0 0 3px rgba(10,47,112,0.5); }
 .mini-slot-pos { display: block; font-size: 8px; font-weight: 800; color: var(--blue); }
 .mini-slot-name { display: block; font-size: 9.5px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62px; margin: 0 auto; }
-.neutral-row { font-size: 13px; margin-top: 10px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+.neutral-header { background: linear-gradient(135deg,#c2680d,#9a4e07); }
+.mini-pitch-neutral { aspect-ratio: 3 / 0.9; background: linear-gradient(180deg,#4b5563,#374151); }
+.mini-slot-neutral { background: rgba(253,231,200,0.95); }
+.mini-slot-neutral .mini-slot-pos { color: #9a4e07; }
 
 .timer-box { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); padding: 16px; margin: 14px 0; text-align: center; }
 .timer-display { font-size: 44px; font-weight: 800; color: var(--blue); font-variant-numeric: tabular-nums; }
