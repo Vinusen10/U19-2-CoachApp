@@ -672,20 +672,76 @@ function effectivePosition(player, overrideMap) {
   return player.posPrimary;
 }
 
+// Ermittelt eine sinnvolle Formations-Richtgröße (Abwehr/Sechser/Mittelfeld/Sturm) für
+// eine gegebene Anzahl Feldspieler PRO TEAM (Torhüter nicht mitgezählt). Kleinere
+// Teams bekommen bewusst nur einen Sechser und eine Dreierkette statt einer vollen
+// Viererkette, damit nicht zu viele Spieler in der Abwehr "geparkt" werden.
+function computeFormationShape(perTeam) {
+  if (perTeam <= 0) return { def: 0, dm: 0, mid: 0, fwd: 0 };
+  let fwd = perTeam <= 8 ? 1 : 2;
+  let dm = perTeam <= 5 ? 0 : (perTeam <= 9 ? 1 : 2);
+  let def = perTeam <= 9 ? (perTeam <= 4 ? Math.max(1, perTeam - fwd - dm - 1) : 3) : 4;
+  let mid = perTeam - def - dm - fwd;
+  while (mid < 0 && def > 1) { def--; mid++; }
+  while (mid < 0 && fwd > 0) { fwd--; mid++; }
+  if (mid < 0) mid = 0;
+  return { def, dm, mid, fwd };
+}
+
+// Füllt Teams, die noch unter `perTeam` Spielern liegen, reihum (jeweils das kleinste
+// Team zuerst) mit den übrigen Spielern auf. Bei nicht exakt durch die Teamzahl
+// teilbarer Gesamtzahl bleibt am Ende genau ein Spieler neutral (keinem Team
+// zugeteilt), da er sonst ein Team größer als die anderen machen würde.
+function fillTeamsToSize(teams, leftoverPlayers, perTeam, posOf) {
+  // perTeam bezieht sich nur auf Feldspieler; Teams mit Torhüter dürfen daher ein
+  // Feld mehr bekommen, sonst würden sie fälschlich schon zu früh als "voll" gelten.
+  const targetSize = teams.map(t => perTeam + (t.some(p => p.pos === 'TW') ? 1 : 0));
+  const neutral = [];
+  leftoverPlayers.forEach(p => {
+    let idx = 0;
+    for (let i = 1; i < teams.length; i++) {
+      if (teams[i].length < teams[idx].length) idx = i;
+    }
+    const e = { id: p.id, name: p.name, pos: posOf(p) };
+    if (teams[idx].length < targetSize[idx]) teams[idx].push(e); else neutral.push(e);
+  });
+  return neutral;
+}
+
 function generateTeams(presentIds, numTeams, overrideMap) {
   const players = presentIds.map(playerById).filter(Boolean);
-  const teams = Array.from({length: numTeams}, () => []);
-  let rot = 0;
-  GROUP_ORDER.forEach(group => {
-    const inGroup = players.filter(p => GROUP_OF[effectivePosition(p, overrideMap)] === group);
-    const arr = shuffle(inGroup);
-    arr.forEach((p, i) => {
-      const pos = effectivePosition(p, overrideMap);
-      teams[(i + rot) % numTeams].push({ id: p.id, name: p.name, pos });
-    });
-    rot = (rot + arr.length) % numTeams;
+  const posOf = p => effectivePosition(p, overrideMap);
+
+  const tws = shuffle(players.filter(p => posOf(p) === 'TW'));
+  let outfield = players.filter(p => posOf(p) !== 'TW');
+  const perTeam = Math.floor(outfield.length / numTeams);
+  const shape = computeFormationShape(perTeam);
+  const teams = Array.from({ length: numTeams }, () => []);
+
+  tws.forEach((p, i) => {
+    if (i < numTeams) teams[i].push({ id: p.id, name: p.name, pos: 'TW' });
+    else outfield.push(p);
   });
-  return teams;
+
+  const pools = {
+    DEF: shuffle(outfield.filter(p => GROUP_OF[posOf(p)] === 'DEF')),
+    DM:  shuffle(outfield.filter(p => posOf(p) === 'DM')),
+    MID: shuffle(outfield.filter(p => GROUP_OF[posOf(p)] === 'MID' && posOf(p) !== 'DM')),
+    FWD: shuffle(outfield.filter(p => GROUP_OF[posOf(p)] === 'FWD')),
+  };
+  const targets = { DEF: shape.def, DM: shape.dm, MID: shape.mid, FWD: shape.fwd };
+  const leftover = [];
+  ['DEF','DM','MID','FWD'].forEach(key => {
+    pools[key].forEach((p, i) => {
+      const teamIdx = i % numTeams;
+      const slot = Math.floor(i / numTeams);
+      if (slot < targets[key]) teams[teamIdx].push({ id: p.id, name: p.name, pos: posOf(p) });
+      else leftover.push(p);
+    });
+  });
+
+  const neutral = fillTeamsToSize(teams, shuffle(leftover), perTeam, posOf);
+  return { teams, neutral };
 }
 
 // Stärke-Score: kombiniert Trainingsbeteiligung (immer vorhanden) mit Spielbeteiligung
@@ -713,37 +769,45 @@ function sortByStrengthDesc(players) {
 // bekommt bevorzugt einen Torhüter, falls einer anwesend ist.
 function generateTeamsBySkill(presentIds, overrideMap) {
   const players = presentIds.map(playerById).filter(Boolean);
-  const byGroup = { TW: [], DEF: [], MID: [], FWD: [] };
-  players.forEach(p => {
-    const pos = effectivePosition(p, overrideMap);
-    byGroup[GROUP_OF[pos]].push(p);
-  });
+  const posOf = p => effectivePosition(p, overrideMap);
+
+  const tws = sortByStrengthDesc(players.filter(p => posOf(p) === 'TW'));
+  let outfield = players.filter(p => posOf(p) !== 'TW');
+  const perTeam = Math.floor(outfield.length / 2);
+  const shape = computeFormationShape(perTeam);
 
   const strong = [];
   const weak = [];
 
-  const tws = sortByStrengthDesc(byGroup.TW);
   if (tws.length === 1) {
     weak.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
   } else if (tws.length >= 2) {
     weak.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
     strong.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' });
-    tws.slice(2).forEach((p, i) => {
-      (i % 2 === 0 ? strong : weak).push({ id: p.id, name: p.name, pos: 'TW' });
-    });
+    outfield = outfield.concat(tws.slice(2));
   }
 
-  ['DEF','MID','FWD'].forEach(group => {
-    const sorted = sortByStrengthDesc(byGroup[group]);
-    const half = Math.ceil(sorted.length / 2);
-    sorted.forEach((p, i) => {
-      const pos = effectivePosition(p, overrideMap);
-      const entry = { id: p.id, name: p.name, pos };
-      if (i < half) strong.push(entry); else weak.push(entry);
+  const pools = {
+    DEF: sortByStrengthDesc(outfield.filter(p => GROUP_OF[posOf(p)] === 'DEF')),
+    DM:  sortByStrengthDesc(outfield.filter(p => posOf(p) === 'DM')),
+    MID: sortByStrengthDesc(outfield.filter(p => GROUP_OF[posOf(p)] === 'MID' && posOf(p) !== 'DM')),
+    FWD: sortByStrengthDesc(outfield.filter(p => GROUP_OF[posOf(p)] === 'FWD')),
+  };
+  const targets = { DEF: shape.def, DM: shape.dm, MID: shape.mid, FWD: shape.fwd };
+  const leftover = [];
+  ['DEF','DM','MID','FWD'].forEach(key => {
+    const target = targets[key];
+    pools[key].forEach((p, i) => {
+      const entry = { id: p.id, name: p.name, pos: posOf(p) };
+      if (i < target) strong.push(entry);
+      else if (i < target * 2) weak.push(entry);
+      else leftover.push(p);
     });
   });
 
-  return { strong, weak };
+  const teams = [strong, weak];
+  const neutral = fillTeamsToSize(teams, sortByStrengthDesc(leftover), perTeam, posOf);
+  return { strong, weak, neutral };
 }
 
 // Teilt anwesende Spieler in "Offensive" (Stürmer, 10er/OM, Flügelspieler LM/RM, ein
@@ -764,70 +828,79 @@ function sortByLast5Desc(players) {
 }
 
 // Team Offensive bekommt die BESTEN Angreifer (Stürmer/10er/Flügel) plus einen
-// angriffslastigen 6er; die Abwehr dieses Teams wird mit den SCHLECHTEREN
-// Verteidigern aufgefüllt. Team Defensive bekommt spiegelbildlich die beste
-// Viererkette plus einen defensiven 6er, aufgefüllt mit den schlechteren Angreifern.
-// So spielen die guten Offensivspieler gegen die guten Defensivspieler.
+// angriffslastigen 6er - begrenzt auf die Formations-Richtgröße -; die Abwehr dieses
+// Teams wird mit den SCHLECHTEREN Verteidigern aufgefüllt. Team Defensive bekommt
+// spiegelbildlich die beste Abwehr plus einen defensiven 6er, aufgefüllt mit den
+// schlechteren Angreifern. So spielen die guten Offensivspieler gegen die guten
+// Defensivspieler, und keines der Teams wird positionell einseitig.
 function generateOffenseDefenseTeams(presentIds, overrideMap) {
   const players = presentIds.map(playerById).filter(Boolean);
   const posOf = p => effectivePosition(p, overrideMap);
-  const entry = (p, pos) => ({ id: p.id, name: p.name, pos });
+  const entry = (p, pos) => ({ id: p.id, name: p.name, pos: pos || posOf(p) });
 
   const attackPositions = ['ST', 'LF', 'RF', 'OM', 'LM', 'RM'];
   const defensePositions = ['IV', 'LV', 'RV'];
 
+  const tws = sortByLast5Desc(players.filter(p => posOf(p) === 'TW'));
+  let outfield = players.filter(p => posOf(p) !== 'TW');
+  const perTeam = Math.floor(outfield.length / 2);
+  const shape = computeFormationShape(perTeam);
+  const attackNeed = shape.mid + shape.fwd; // 10er, Flügel und Stürmer zusammen
+  const defNeed = shape.def;
+
   const usedIds = new Set();
   const teamOffense = [];
   const teamDefense = [];
+  const leftover = [];
 
-  // Torhüter: einer zur Defensive, zweiter (falls vorhanden) zur Offensive.
-  const tws = sortByLast5Desc(players.filter(p => posOf(p) === 'TW'));
   if (tws[0]) { teamDefense.push(entry(tws[0], 'TW')); usedIds.add(tws[0].id); }
   if (tws[1]) { teamOffense.push(entry(tws[1], 'TW')); usedIds.add(tws[1].id); }
+  outfield = outfield.concat(tws.slice(2));
 
-  // Angreifer nach Form sortiert: obere Hälfte (die Besten) zur Offensive - das ist
-  // ihre Spezialität -, untere Hälfte (die Schwächeren) als Auffüllung zur Defensive.
-  const attackers = sortByLast5Desc(players.filter(p => !usedIds.has(p.id) && attackPositions.includes(posOf(p))));
-  const attackHalf = Math.ceil(attackers.length / 2);
+  // Angreifer nach Form sortiert: die besten `attackNeed` zur Offensive (ihre
+  // Spezialität), die nächsten `attackNeed` als Auffüllung zur Defensive, Rest in
+  // den allgemeinen Restpool.
+  const attackers = sortByLast5Desc(outfield.filter(p => !usedIds.has(p.id) && attackPositions.includes(posOf(p))));
   attackers.forEach((p, i) => {
     usedIds.add(p.id);
-    const e = entry(p, posOf(p));
-    if (i < attackHalf) teamOffense.push(e); else teamDefense.push(e);
+    const e = entry(p);
+    if (i < attackNeed) teamOffense.push(e);
+    else if (i < attackNeed * 2) teamDefense.push(e);
+    else leftover.push(p);
   });
 
-  // Verteidiger nach Form sortiert: obere Hälfte (die Besten) zur Defensive - ihre
-  // Spezialität -, untere Hälfte als Auffüllung zur Offensive.
-  const defenders = sortByLast5Desc(players.filter(p => !usedIds.has(p.id) && defensePositions.includes(posOf(p))));
-  const defHalf = Math.ceil(defenders.length / 2);
+  // Verteidiger nach Form sortiert: die besten `defNeed` zur Defensive, die nächsten
+  // `defNeed` als Auffüllung zur Offensive, Rest in den allgemeinen Restpool.
+  const defenders = sortByLast5Desc(outfield.filter(p => !usedIds.has(p.id) && defensePositions.includes(posOf(p))));
   defenders.forEach((p, i) => {
     usedIds.add(p.id);
-    const e = entry(p, posOf(p));
-    if (i < defHalf) teamDefense.push(e); else teamOffense.push(e);
+    const e = entry(p);
+    if (i < defNeed) teamDefense.push(e);
+    else if (i < defNeed * 2) teamOffense.push(e);
+    else leftover.push(p);
   });
 
-  // Die "6er" (DM): der beste mit angriffslastiger Sekundärposition zur Offensive,
-  // der beste mit defensiver Sekundärposition zur Defensive.
-  const dms = sortByLast5Desc(players.filter(p => !usedIds.has(p.id) && posOf(p) === 'DM'));
-  let attackDM = dms.find(p => p.posSecondary && attackPositions.includes(p.posSecondary));
-  let defenseDM = dms.find(p => p !== attackDM && p.posSecondary && defensePositions.includes(p.posSecondary));
-  if (!attackDM && dms.length) attackDM = dms.find(p => p !== defenseDM);
-  if (!defenseDM && dms.length) defenseDM = dms.find(p => p !== attackDM);
-  if (attackDM) { teamOffense.push(entry(attackDM, 'DM')); usedIds.add(attackDM.id); }
-  if (defenseDM) { teamDefense.push(entry(defenseDM, 'DM')); usedIds.add(defenseDM.id); }
+  // Die "6er" (DM) nur, wenn die Formation für die aktuelle Teamgröße überhaupt einen
+  // vorsieht: der beste mit angriffslastiger Sekundärposition zur Offensive, der
+  // beste mit defensiver Sekundärposition zur Defensive.
+  const dms = sortByLast5Desc(outfield.filter(p => !usedIds.has(p.id) && posOf(p) === 'DM'));
+  if (shape.dm > 0) {
+    let attackDM = dms.find(p => p.posSecondary && attackPositions.includes(p.posSecondary));
+    let defenseDM = dms.find(p => p !== attackDM && p.posSecondary && defensePositions.includes(p.posSecondary));
+    if (!attackDM && dms.length) attackDM = dms.find(p => p !== defenseDM);
+    if (!defenseDM && dms.length) defenseDM = dms.find(p => p !== attackDM);
+    if (attackDM) { teamOffense.push(entry(attackDM, 'DM')); usedIds.add(attackDM.id); }
+    if (defenseDM) { teamDefense.push(entry(defenseDM, 'DM')); usedIds.add(defenseDM.id); }
+  }
+  dms.forEach(p => { if (!usedIds.has(p.id)) leftover.push(p); });
 
-  // Rest (übrige DMs, ZM, überzählige TW, ...) positionsgerecht auf das jeweils
-  // kleinere Team verteilen, damit beide Seiten eine vollständige Aufstellung haben.
-  const rest = players.filter(p => !usedIds.has(p.id));
-  GROUP_ORDER.forEach(group => {
-    const inGroup = sortByLast5Desc(rest.filter(p => GROUP_OF[posOf(p)] === group));
-    inGroup.forEach(p => {
-      const e = entry(p, posOf(p));
-      if (teamOffense.length <= teamDefense.length) teamOffense.push(e);
-      else teamDefense.push(e);
-    });
-  });
+  // Rest (ZM, überzählige TW, nicht verwendete Angreifer/Verteidiger/6er) auf das
+  // jeweils kleinere Team verteilen; was am Ende nicht mehr passt, bleibt neutral.
+  outfield.forEach(p => { if (!usedIds.has(p.id) && !leftover.includes(p)) leftover.push(p); });
 
-  return { offense: teamOffense, defense: teamDefense };
+  const teams = [teamOffense, teamDefense];
+  const neutral = fillTeamsToSize(teams, sortByLast5Desc(leftover), perTeam, posOf);
+  return { offense: teamOffense, defense: teamDefense, neutral };
 }
 
 /* ------------------------- Formation / Startelf --------------------------- */
@@ -1205,7 +1278,7 @@ function viewTeams(trainingId) {
   const presentPlayers = presentIds.map(playerById).filter(Boolean);
   const withSecondary = presentPlayers.filter(p => p.posSecondary);
 
-  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams, t.id, t.teamGen.teamLabels) : '';
+  const teamsHtml = t.teamGen.teams ? renderTeamsResult(t.teamGen.teams, t.id, t.teamGen.teamLabels, t.teamGen.neutral) : '';
 
   return `
   ${header('Teams erstellen', 'trainingDetail', {id:t.id})}
@@ -1264,28 +1337,56 @@ function viewTeams(trainingId) {
   ${tabbar()}`;
 }
 
-function renderTeamsResult(teams, trainingId, labels) {
+function renderMiniPitch(team, trainingId, teamIdx, sel) {
+  const lines = { FWD: [], MID: [], DM: [], DEF: [], TW: [] };
+  team.forEach(pl => {
+    if (pl.pos === 'DM') lines.DM.push(pl);
+    else lines[GROUP_OF[pl.pos] || 'MID'].push(pl);
+  });
+  const rows = [
+    { key: 'FWD', y: 13 },
+    { key: 'MID', y: 39 },
+    { key: 'DM',  y: 58 },
+    { key: 'DEF', y: 79 },
+    { key: 'TW',  y: 94 },
+  ];
+  let slots = '';
+  rows.forEach(row => {
+    const players = lines[row.key];
+    const n = players.length;
+    if (!n) return;
+    players.forEach((pl, i) => {
+      const x = ((i + 1) / (n + 1)) * 100;
+      const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === teamIdx && sel.playerId === pl.id;
+      slots += `<button class="mini-slot ${isSelected ? 'is-selected' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
+        data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">
+        <span class="mini-slot-pos">${pl.pos}</span>
+        <span class="mini-slot-name">${esc(pl.name)}</span>
+      </button>`;
+    });
+  });
+  return `<div class="mini-pitch">${slots}</div>`;
+}
+
+function renderTeamsResult(teams, trainingId, labels, neutral) {
   const letters = ['A','B','C'];
+  const colorClass = ['team-A','team-B','team-C'];
   const sel = state.teamSwapSelection;
-  return `<div class="team-grid">
-    ${teams.map((team, i) => {
-      const title = labels && labels[i] ? `Team ${letters[i]} · ${labels[i]}` : `Team ${letters[i]}`;
-      return `
-      <div class="team-card team-${letters[i]}">
-        <div class="team-head">${title} <span class="team-count">${team.length}</span></div>
-        ${team.map(pl => {
-          const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === i && sel.playerId === pl.id;
-          return `
-          <button class="team-player team-player-tap ${isSelected ? 'is-selected' : ''}" data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${i}">
-            <span class="pos-chip">${pl.pos}</span>${esc(pl.name)}
-            <span class="move-hint">${isSelected ? '✓' : '⇄'}</span>
-          </button>`;
-        }).join('')}
-        ${team.length === 0 ? `<div class="team-empty">–</div>` : ''}
-      </div>`;
-    }).join('')}
-  </div>
-  <p class="muted team-hint">${sel ? 'Jetzt einen Spieler im anderen Team antippen, um zu tauschen (oder nochmal antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen Spieler im anderen Team antippen – beide tauschen die Seite.'}</p>`;
+  let html = '<div class="mini-pitch-wrap">';
+  teams.forEach((team, i) => {
+    const title = labels && labels[i] ? `Team ${letters[i]} · ${labels[i]}` : `Team ${letters[i]}`;
+    html += `
+    <div class="mini-pitch-block">
+      <div class="mini-pitch-header ${colorClass[i]}">${title} <span class="team-count">${team.length}</span></div>
+      ${renderMiniPitch(team, trainingId, i, sel)}
+    </div>`;
+  });
+  html += '</div>';
+  if (neutral && neutral.length) {
+    html += `<p class="neutral-row"><strong>Neutral</strong> (spielt bei der Mannschaft in Ballbesitz mit): ${neutral.map(p => esc(p.name)).join(', ')}</p>`;
+  }
+  html += `<p class="muted team-hint">${sel ? 'Jetzt einen Spieler im anderen Team antippen, um zu tauschen (oder nochmal antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen Spieler im anderen Team antippen – beide tauschen die Seite.'}</p>`;
+  return html;
 }
 
 function renderRotation() {
@@ -2099,16 +2200,20 @@ function handleAction(btn, e) {
     const presentIds = Object.entries(t.attendance).filter(([,s]) => s === 'anwesend').map(([pid]) => pid);
     state.teamSwapSelection = null;
     if (t.teamGen.numTeams === 2 && t.teamGen.mode === 'strength') {
-      const { strong, weak } = generateTeamsBySkill(presentIds, t.teamGen.posOverride);
+      const { strong, weak, neutral } = generateTeamsBySkill(presentIds, t.teamGen.posOverride);
       t.teamGen.teams = [strong, weak];
       t.teamGen.teamLabels = ['Stärker', 'Schwächer'];
+      t.teamGen.neutral = neutral;
     } else if (t.teamGen.numTeams === 2 && t.teamGen.mode === 'offense_defense') {
-      const { offense, defense } = generateOffenseDefenseTeams(presentIds, t.teamGen.posOverride);
+      const { offense, defense, neutral } = generateOffenseDefenseTeams(presentIds, t.teamGen.posOverride);
       t.teamGen.teams = [offense, defense];
       t.teamGen.teamLabels = ['Offensive', 'Defensive'];
+      t.teamGen.neutral = neutral;
     } else {
-      t.teamGen.teams = generateTeams(presentIds, t.teamGen.numTeams, t.teamGen.posOverride);
+      const { teams, neutral } = generateTeams(presentIds, t.teamGen.numTeams, t.teamGen.posOverride);
+      t.teamGen.teams = teams;
       t.teamGen.teamLabels = null;
+      t.teamGen.neutral = neutral;
     }
     saveDB(); render();
   }
@@ -2122,6 +2227,10 @@ function handleAction(btn, e) {
       team.forEach(pl => text += `- ${pl.name} (${pl.pos})\n`);
       text += '\n';
     });
+    if (t.teamGen.neutral && t.teamGen.neutral.length) {
+      text += `Neutral\n`;
+      t.teamGen.neutral.forEach(pl => text += `- ${pl.name}\n`);
+    }
     copyToClipboard(text.trim());
   }
   else if (action === 'teamPlayerClick') {
