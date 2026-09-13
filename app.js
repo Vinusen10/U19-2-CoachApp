@@ -44,10 +44,10 @@ const FORMATIONS = {
     { key:'IV',  label:'IV',  group:'DEF', x:50, y:83, pref:['IV'] },
     { key:'RIV', label:'RIV', group:'DEF', x:70, y:80, pref:['IV'] },
     { key:'RAV', label:'RAV', group:'DEF', x:92, y:74, pref:['RV'] },
-    { key:'LM',  label:'LM',  group:'MID', x:10, y:48, pref:['LM'] },
+    { key:'LM',  label:'LM',  group:'MID', x:10, y:48, pref:['LM','LF'] },
     { key:'ZM1', label:'ZM',  group:'MID', x:37, y:52, pref:['ZM','DM','OM'] },
     { key:'ZM2', label:'ZM',  group:'MID', x:63, y:52, pref:['ZM','DM','OM'] },
-    { key:'RM',  label:'RM',  group:'MID', x:90, y:48, pref:['RM'] },
+    { key:'RM',  label:'RM',  group:'MID', x:90, y:48, pref:['RM','RF'] },
     { key:'ST',  label:'ST',  group:'FWD', x:50, y:16, pref:['ST'] },
   ]},
   '4-2-3-1': { slots: [
@@ -58,9 +58,9 @@ const FORMATIONS = {
     { key:'RV',  label:'RV',  group:'DEF', x:88, y:76, pref:['RV'] },
     { key:'DM1', label:'DM',  group:'MID', x:35, y:60, pref:['DM'] },
     { key:'DM2', label:'DM',  group:'MID', x:65, y:60, pref:['DM'] },
-    { key:'LM',  label:'LM',  group:'MID', x:10, y:36, pref:['LM'] },
+    { key:'LM',  label:'LM',  group:'MID', x:10, y:36, pref:['LM','LF'] },
     { key:'OM',  label:'OM',  group:'MID', x:50, y:34, pref:['OM'] },
-    { key:'RM',  label:'RM',  group:'MID', x:90, y:36, pref:['RM'] },
+    { key:'RM',  label:'RM',  group:'MID', x:90, y:36, pref:['RM','RF'] },
     { key:'ST',  label:'ST',  group:'FWD', x:50, y:14, pref:['ST'] },
   ]},
   '5-2-1-2': { slots: [
@@ -81,11 +81,11 @@ const FORMATIONS = {
     { key:'IV1', label:'IV',  group:'DEF', x:30, y:80, pref:['IV'] },
     { key:'IV2', label:'IV',  group:'DEF', x:50, y:83, pref:['IV'] },
     { key:'IV3', label:'IV',  group:'DEF', x:70, y:80, pref:['IV'] },
-    { key:'LM',  label:'LM',  group:'MID', x:8,  y:52, pref:['LM','LV'] },
+    { key:'LM',  label:'LM',  group:'MID', x:8,  y:52, pref:['LM','LV','LF'] },
     { key:'DM1', label:'DM',  group:'MID', x:37, y:58, pref:['DM'] },
     { key:'ZM',  label:'ZM',  group:'MID', x:50, y:48, pref:['ZM','DM','OM'] },
     { key:'DM2', label:'DM',  group:'MID', x:63, y:58, pref:['DM'] },
-    { key:'RM',  label:'RM',  group:'MID', x:92, y:52, pref:['RM','RV'] },
+    { key:'RM',  label:'RM',  group:'MID', x:92, y:52, pref:['RM','RV','RF'] },
     { key:'ST1', label:'ST',  group:'FWD', x:35, y:14, pref:['ST'] },
     { key:'ST2', label:'ST',  group:'FWD', x:65, y:14, pref:['ST'] },
   ]},
@@ -98,9 +98,9 @@ const FORMATIONS = {
     { key:'DM',  label:'DM',  group:'MID', x:50, y:60, pref:['DM'] },
     { key:'ZM1', label:'ZM',  group:'MID', x:26, y:46, pref:['ZM','OM'] },
     { key:'ZM2', label:'ZM',  group:'MID', x:74, y:46, pref:['ZM','OM'] },
-    { key:'LF',  label:'LF',  group:'FWD', x:14, y:16, pref:['LF'] },
+    { key:'LF',  label:'LF',  group:'FWD', x:14, y:16, pref:['LF','LM'] },
     { key:'ST',  label:'ST',  group:'FWD', x:50, y:10, pref:['ST'] },
-    { key:'RF',  label:'RF',  group:'FWD', x:86, y:16, pref:['RF'] },
+    { key:'RF',  label:'RF',  group:'FWD', x:86, y:16, pref:['RF','RM'] },
   ]},
 };
 const FORMATION_NAMES = Object.keys(FORMATIONS);
@@ -750,9 +750,28 @@ function generateTeamsBySkill(presentIds, overrideMap) {
 // angriffslastiger 6er) gegen "Defensive" (komplette Abwehr, Torwart, ein
 // defensiverer 6er) auf. Der Rest wird positionsgerecht auf beide Teams verteilt,
 // damit am Ende zwei vollständige, spielbare Mannschaften entstehen.
+// "Gute" Spieler werden für diesen Modus anhand der Beteiligung der letzten 5 Trainings
+// bestimmt (nicht der Saisonquote), da das die aktuelle Form besser abbildet.
+function last5Quote(playerId) {
+  const s = playerStats(playerId);
+  return s.last5Quote != null ? s.last5Quote : s.quote;
+}
+function sortByLast5Desc(players) {
+  return players
+    .map(p => ({ p, score: last5Quote(p.id), rnd: Math.random() }))
+    .sort((a,b) => b.score - a.score || b.rnd - a.rnd)
+    .map(x => x.p);
+}
+
+// Team Offensive bekommt die BESTEN Angreifer (Stürmer/10er/Flügel) plus einen
+// angriffslastigen 6er; die Abwehr dieses Teams wird mit den SCHLECHTEREN
+// Verteidigern aufgefüllt. Team Defensive bekommt spiegelbildlich die beste
+// Viererkette plus einen defensiven 6er, aufgefüllt mit den schlechteren Angreifern.
+// So spielen die guten Offensivspieler gegen die guten Defensivspieler.
 function generateOffenseDefenseTeams(presentIds, overrideMap) {
   const players = presentIds.map(playerById).filter(Boolean);
   const posOf = p => effectivePosition(p, overrideMap);
+  const entry = (p, pos) => ({ id: p.id, name: p.name, pos });
 
   const attackPositions = ['ST', 'LF', 'RF', 'OM', 'LM', 'RM'];
   const defensePositions = ['IV', 'LV', 'RV'];
@@ -761,42 +780,50 @@ function generateOffenseDefenseTeams(presentIds, overrideMap) {
   const teamOffense = [];
   const teamDefense = [];
 
-  // Torhüter: einer bevorzugt zur Defensive (klassische Zuordnung), zweiter zur
-  // Offensive (damit auch dieses Team einen TW hat). Weitere Ersatz-TW (selten)
-  // landen im Restpool.
-  const tws = sortByStrengthDesc(players.filter(p => posOf(p) === 'TW'));
-  if (tws[0]) { teamDefense.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' }); usedIds.add(tws[0].id); }
-  if (tws[1]) { teamOffense.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' }); usedIds.add(tws[1].id); }
+  // Torhüter: einer zur Defensive, zweiter (falls vorhanden) zur Offensive.
+  const tws = sortByLast5Desc(players.filter(p => posOf(p) === 'TW'));
+  if (tws[0]) { teamDefense.push(entry(tws[0], 'TW')); usedIds.add(tws[0].id); }
+  if (tws[1]) { teamOffense.push(entry(tws[1], 'TW')); usedIds.add(tws[1].id); }
 
-  // Kernspieler der jeweiligen Gruppe direkt zuordnen.
-  players.forEach(p => {
-    if (usedIds.has(p.id)) return;
-    const pos = posOf(p);
-    if (attackPositions.includes(pos)) { teamOffense.push({ id: p.id, name: p.name, pos }); usedIds.add(p.id); }
-    else if (defensePositions.includes(pos)) { teamDefense.push({ id: p.id, name: p.name, pos }); usedIds.add(p.id); }
+  // Angreifer nach Form sortiert: obere Hälfte (die Besten) zur Offensive - das ist
+  // ihre Spezialität -, untere Hälfte (die Schwächeren) als Auffüllung zur Defensive.
+  const attackers = sortByLast5Desc(players.filter(p => !usedIds.has(p.id) && attackPositions.includes(posOf(p))));
+  const attackHalf = Math.ceil(attackers.length / 2);
+  attackers.forEach((p, i) => {
+    usedIds.add(p.id);
+    const e = entry(p, posOf(p));
+    if (i < attackHalf) teamOffense.push(e); else teamDefense.push(e);
   });
 
-  // Die "6er" (DM): einer mit angriffslastiger Sekundärposition zur Offensive, einer
-  // mit defensiver Sekundärposition zur Defensive. Rest nach Stärke sortiert später
-  // im allgemeinen Restpool verteilt.
-  const dms = sortByStrengthDesc(players.filter(p => !usedIds.has(p.id) && posOf(p) === 'DM'));
+  // Verteidiger nach Form sortiert: obere Hälfte (die Besten) zur Defensive - ihre
+  // Spezialität -, untere Hälfte als Auffüllung zur Offensive.
+  const defenders = sortByLast5Desc(players.filter(p => !usedIds.has(p.id) && defensePositions.includes(posOf(p))));
+  const defHalf = Math.ceil(defenders.length / 2);
+  defenders.forEach((p, i) => {
+    usedIds.add(p.id);
+    const e = entry(p, posOf(p));
+    if (i < defHalf) teamDefense.push(e); else teamOffense.push(e);
+  });
+
+  // Die "6er" (DM): der beste mit angriffslastiger Sekundärposition zur Offensive,
+  // der beste mit defensiver Sekundärposition zur Defensive.
+  const dms = sortByLast5Desc(players.filter(p => !usedIds.has(p.id) && posOf(p) === 'DM'));
   let attackDM = dms.find(p => p.posSecondary && attackPositions.includes(p.posSecondary));
   let defenseDM = dms.find(p => p !== attackDM && p.posSecondary && defensePositions.includes(p.posSecondary));
   if (!attackDM && dms.length) attackDM = dms.find(p => p !== defenseDM);
   if (!defenseDM && dms.length) defenseDM = dms.find(p => p !== attackDM);
-  if (attackDM) { teamOffense.push({ id: attackDM.id, name: attackDM.name, pos: 'DM' }); usedIds.add(attackDM.id); }
-  if (defenseDM) { teamDefense.push({ id: defenseDM.id, name: defenseDM.name, pos: 'DM' }); usedIds.add(defenseDM.id); }
+  if (attackDM) { teamOffense.push(entry(attackDM, 'DM')); usedIds.add(attackDM.id); }
+  if (defenseDM) { teamDefense.push(entry(defenseDM, 'DM')); usedIds.add(defenseDM.id); }
 
-  // Rest (übrige DMs, ZM, überzählige TW, ...) positionsgerecht auf beide Teams
-  // verteilen, damit beide Seiten eine vollständige Aufstellung bekommen. Das
-  // jeweils kleinere Team wird zuerst aufgefüllt.
+  // Rest (übrige DMs, ZM, überzählige TW, ...) positionsgerecht auf das jeweils
+  // kleinere Team verteilen, damit beide Seiten eine vollständige Aufstellung haben.
   const rest = players.filter(p => !usedIds.has(p.id));
   GROUP_ORDER.forEach(group => {
-    const inGroup = sortByStrengthDesc(rest.filter(p => GROUP_OF[posOf(p)] === group));
+    const inGroup = sortByLast5Desc(rest.filter(p => GROUP_OF[posOf(p)] === group));
     inGroup.forEach(p => {
-      const entry = { id: p.id, name: p.name, pos: posOf(p) };
-      if (teamOffense.length <= teamDefense.length) teamOffense.push(entry);
-      else teamDefense.push(entry);
+      const e = entry(p, posOf(p));
+      if (teamOffense.length <= teamDefense.length) teamOffense.push(e);
+      else teamDefense.push(e);
     });
   });
 
@@ -812,6 +839,21 @@ function slotScore(slot, player, overridePos) {
   if (slot.pref && sec && slot.pref.includes(sec)) return 2;
   if (GROUP_OF[pos] === slot.group) return 1.5;
   if (sec && GROUP_OF[sec] === slot.group) return 1;
+  return 0;
+}
+
+// Für die manuelle Spielerauswahl auf dem Feld: nur echte Positions-Treffer zählen
+// (kein loses "gleiche Gruppe"-Fallback wie bei der Automatik), damit z.B. bei einer
+// DM-Position nicht ein reiner Verteidiger mit fachfremder Sekundärposition vor
+// echten DM-Kandidaten auftaucht.
+function slotPickerScore(slot, player) {
+  if (slot.pref) {
+    if (slot.pref.includes(player.posPrimary)) return 2;
+    if (player.posSecondary && slot.pref.includes(player.posSecondary)) return 1;
+    return 0;
+  }
+  if (GROUP_OF[player.posPrimary] === slot.group) return 2;
+  if (player.posSecondary && GROUP_OF[player.posSecondary] === slot.group) return 1;
   return 0;
 }
 
@@ -879,7 +921,15 @@ const state = {
   trainingFilter: { period: 'all' },
   fussballImport: { raw: '', parsed: [] },
   teamSwapSelection: null,
+  detailsOpen: {},
 };
+
+function isDetailsOpen(key, defaultOpen) {
+  if (state.detailsOpen && Object.prototype.hasOwnProperty.call(state.detailsOpen, key)) {
+    return state.detailsOpen[key];
+  }
+  return defaultOpen;
+}
 
 function leavingRouteHook(nextRoute) {
   if (state.route === 'generalNoteForm' && nextRoute !== 'generalNoteForm') {
@@ -1185,11 +1235,11 @@ function viewTeams(trainingId) {
         <button class="${t.teamGen.mode==='random'?'active':''}" data-action="setTeamMode" data-id="${t.id}" data-mode="random">Zufällig</button>
       </div>
       ${t.teamGen.mode === 'strength' ? `<p class="muted small-note">Team A = stärkere Gruppe, Team B = schwächere Gruppe – nach Trainings- und Spielbeteiligung, je Position getrennt aufgeteilt. Team B bekommt bevorzugt einen Torhüter.</p>` : ''}
-      ${t.teamGen.mode === 'offense_defense' ? `<p class="muted small-note">Team A = Offensive (Stürmer, 10er, Flügelspieler, ein Angriffs-6er), Team B = Defensive (komplette Abwehr, Torwart, ein Abwehr-6er). Der Rest wird positionsgerecht aufgefüllt, damit beide Teams eine vollständige Aufstellung haben.</p>` : ''}
+      ${t.teamGen.mode === 'offense_defense' ? `<p class="muted small-note">Team A = die besten Offensivspieler (Stürmer, 10er, Flügel, ein Angriffs-6er), aufgefüllt mit den schwächeren Verteidigern. Team B = die beste Abwehr plus ein defensiver 6er, aufgefüllt mit den schwächeren Offensivspielern. Bewertung nach Beteiligung der letzten 5 Trainings – so spielen die guten Offensiv- gegen die guten Defensivspieler.</p>` : ''}
     </div>` : ''}
 
     ${withSecondary.length ? `
-    <details class="details-block">
+    <details class="details-block" data-remember="posOverride-${t.id}" ${isDetailsOpen('posOverride-'+t.id, false) ? 'open' : ''}>
       <summary>Positionen für heute anpassen (${withSecondary.length})</summary>
       ${withSecondary.map(p => {
         const ov = t.teamGen.posOverride[p.id] || 'primary';
@@ -1677,7 +1727,7 @@ function viewMatchDetail(id) {
       <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="zugesagt">Alle zugesagt</button>
       <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="offen">Alle offen</button>
     </div>
-    <details class="details-block" ${m.kader && m.kader.length ? '' : 'open'}>
+    <details class="details-block" data-remember="matchAvail-${m.id}" ${isDetailsOpen('matchAvail-'+m.id, !(m.kader && m.kader.length)) ? 'open' : ''}>
       <summary>Zusagen einzeln erfassen</summary>
       <div class="attend-list">
         ${activePlayers().slice().sort((a,b)=>a.name.localeCompare(b.name,'de')).map(p => {
@@ -1701,7 +1751,7 @@ function viewMatchDetail(id) {
     <div class="chip-list">
       ${kaderPlayers.map(p => `<span class="chip">${esc(p.name)} <button data-action="removeFromKader" data-id="${m.id}" data-player="${p.id}">✕</button></span>`).join('')}
     </div>
-    <details class="details-block">
+    <details class="details-block" data-remember="addKader-${m.id}" ${isDetailsOpen('addKader-'+m.id, false) ? 'open' : ''}>
       <summary>Spieler zum Kader hinzufügen</summary>
       <div class="chip-list">
         ${activePlayers().filter(p => !(m.kader||[]).includes(p.id)).map(p => `<button class="chip chip-add" data-action="addToKader" data-id="${m.id}" data-player="${p.id}">+ ${esc(p.name)}</button>`).join('')}
@@ -1771,6 +1821,15 @@ function viewBackup() {
 /* ---------------------------------- Actions ------------------------------------- */
 
 let timerState = { seconds: 360, running: false, interval: null, round: 1, started: false };
+
+// details-Elemente merken sich ihren Auf/Zu-Zustand über Re-Renders hinweg (sonst
+// würde jedes Antippen eines Buttons darin die Klappe wieder schließen).
+document.addEventListener('toggle', (e) => {
+  const el = e.target;
+  if (el && el.tagName === 'DETAILS' && el.dataset && el.dataset.remember) {
+    state.detailsOpen[el.dataset.remember] = el.open;
+  }
+}, true);
 
 document.addEventListener('click', (e) => {
   const backBtn = e.target.closest('[data-back]');
@@ -2430,7 +2489,11 @@ function openSlotPicker(matchId, slotKey) {
   const formation = FORMATIONS[m.formation];
   const slot = formation.slots.find(s => s.key === slotKey);
   const allKaderPlayers = (m.kader||[]).map(playerById).filter(Boolean);
-  let kaderPlayers = allKaderPlayers.filter(p => slotScore(slot, p) > 0);
+  let kaderPlayers = allKaderPlayers
+    .map(p => ({ p, score: slotPickerScore(slot, p) }))
+    .filter(x => x.score > 0)
+    .sort((a,b) => b.score - a.score || a.p.name.localeCompare(b.p.name, 'de'))
+    .map(x => x.p);
   const usedFallback = kaderPlayers.length === 0 && allKaderPlayers.length > 0;
   if (usedFallback) kaderPlayers = allKaderPlayers;
 
