@@ -1346,6 +1346,11 @@ function viewTeams(trainingId) {
   ${tabbar()}`;
 }
 
+// Reihenfolge links -> rechts je nach tatsächlicher Positionsbezeichnung, nicht nach
+// Array-Reihenfolge - sonst bleibt ein Spieler nach einem Tausch optisch auf der
+// falschen Seite stehen, obwohl sich sein Label geändert hat.
+const LR_ORDER = { LV: 0, IV: 1, RV: 2, LM: 0, ZM: 1, OM: 1, RM: 2, LF: 0, ST: 1, RF: 2, DM: 1, TW: 1 };
+
 function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
   const lines = { FWD: [], MID: [], DM: [], DEF: [], TW: [] };
   team.forEach(pl => {
@@ -1361,7 +1366,11 @@ function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
   ];
   let slots = '';
   rows.forEach(row => {
-    const players = lines[row.key];
+    const players = lines[row.key].slice().sort((a, b) => {
+      const oa = LR_ORDER[a.pos] != null ? LR_ORDER[a.pos] : 1;
+      const ob = LR_ORDER[b.pos] != null ? LR_ORDER[b.pos] : 1;
+      return oa - ob;
+    });
     const n = players.length;
     if (!n) return;
     players.forEach((pl, i) => {
