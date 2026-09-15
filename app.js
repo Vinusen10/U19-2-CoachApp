@@ -8,7 +8,7 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -206,7 +206,8 @@ function freshDB() {
     notes: [],
     generalNotes: [],
     matches: [],
-    settings: { trainingWeekdays: [1, 4] }, // Standard: Montag + Donnerstag
+    exercises: [],
+    settings: { trainingWeekdays: [1, 4], lastBackupAt: null }, // Standard: Montag + Donnerstag
   };
 }
 
@@ -239,8 +240,11 @@ function migrate(db) {
     delete m.duration;
     return m;
   });
+  db.exercises = db.exercises || [];
+  db.trainings.forEach(t => { t.sessionPlan = t.sessionPlan || []; });
+  if (!('lastBackupAt' in db.settings)) db.settings.lastBackupAt = null;
   // Zukünftige Migrationen hier einhängen, z.B.:
-  // if (db.version < 6) { ...db.version = 6; }
+  // if (db.version < 7) { ...db.version = 7; }
   db.version = DB_VERSION;
   return db;
 }
@@ -256,6 +260,7 @@ function loadDB() {
     db.notes = db.notes || [];
     db.generalNotes = db.generalNotes || [];
     db.matches = db.matches || [];
+    db.exercises = db.exercises || [];
     db.settings = db.settings || {};
     return migrate(db);
   } catch (e) {
@@ -302,7 +307,7 @@ function generateUpcomingTrainings(horizonDays) {
     if (existingDates.has(iso)) continue;
     const attendance = {};
     activePlayers().forEach(p => attendance[p.id] = 'offen');
-    DB.trainings.push({ id: uid('t'), date: iso, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' } });
+    DB.trainings.push({ id: uid('t'), date: iso, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' }, sessionPlan: [] });
     existingDates.add(iso);
     created++;
   }
@@ -646,6 +651,17 @@ function teamQuote() {
   if (withData.length === 0) return null;
   const sum = withData.reduce((a,s) => a + s.quote, 0);
   return Math.round(sum / withData.length);
+}
+
+// Gibt zurück, vor wie vielen Tagen zuletzt ein Backup exportiert wurde, oder null,
+// wenn noch nie eines exportiert wurde.
+function daysSinceBackup() {
+  const at = DB.settings.lastBackupAt;
+  if (!at) return null;
+  const then = new Date(at);
+  if (isNaN(then.getTime())) return null;
+  const diffMs = Date.now() - then.getTime();
+  return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
 }
 
 function openNotesGrouped() {
@@ -995,11 +1011,12 @@ const state = {
   route: 'dashboard',
   params: {},
   history: [],
-  playerFilter: { search: '', position: '', sortBy: 'name' },
+  playerFilter: { search: '', position: '', sortBy: 'trainingQuote' },
   trainingFilter: { period: 'all' },
   fussballImport: { raw: '', parsed: [] },
   teamSwapSelection: null,
   detailsOpen: {},
+  exerciseFilter: { category: '' },
 };
 
 function isDetailsOpen(key, defaultOpen) {
@@ -1074,6 +1091,8 @@ function render() {
     case 'matchList': html = viewMatchList(); break;
     case 'matchDetail': html = viewMatchDetail(state.params.id); break;
     case 'backup': html = viewBackup(); break;
+    case 'exercises': html = viewExercises(); break;
+    case 'exerciseForm': html = viewExerciseForm(state.params.id); break;
     case 'importFussball': html = viewImportFussball(); break;
     default: html = viewDashboard();
   }
@@ -1098,7 +1117,7 @@ function bindNav() {
 }
 function topLevel(route) {
   if (['dashboard'].includes(route)) return 'dashboard';
-  if (['trainingList','trainingDetail'].includes(route)) return 'trainingList';
+  if (['trainingList','trainingDetail','exercises','exerciseForm'].includes(route)) return 'trainingList';
   if (['teams'].includes(route)) return 'teams';
   if (['matchList','matchDetail','importFussball'].includes(route)) return 'matchList';
   if (['players','playerProfile','playerForm'].includes(route)) return 'players';
@@ -1135,6 +1154,8 @@ function viewDashboard() {
   const focus = recommendedFocus();
   const openImportant = DB.notes.filter(n => !n.done && n.priority === 'Hoch').length;
   const tq = teamQuote();
+  const backupDays = daysSinceBackup();
+  const showBackupReminder = backupDays === null || backupDays >= 21;
 
   return `
   <header class="topbar topbar--brand">
@@ -1148,6 +1169,12 @@ function viewDashboard() {
     <button class="icon-btn" data-nav="backup" title="Backup">⋮</button>
   </header>
   <main class="content">
+    ${showBackupReminder ? `<div class="callout callout--backup">
+      <div class="callout-title">💾 Backup-Erinnerung</div>
+      <div class="callout-body">${backupDays === null ? 'Noch nie gesichert.' : `Letztes Backup vor ${backupDays} Tagen.`} Jetzt sichern, damit nichts verloren geht.</div>
+      <button class="btn btn-block" data-nav="backup">Zum Backup</button>
+    </div>` : ''}
+
     <div class="grid2">
       <div class="stat-card"><div class="stat-num">${activePlayers().length}</div><div class="stat-label">Spieler</div></div>
       <div class="stat-card"><div class="stat-num">${DB.trainings.filter(isTrainingComplete).length}</div><div class="stat-label">Trainings erfasst</div></div>
@@ -1166,6 +1193,7 @@ function viewDashboard() {
       <button class="big-btn" data-nav="matchList">🏟️<span>Spieltag</span></button>
       <button class="big-btn" data-nav="players">👥<span>Spieler</span></button>
       <button class="big-btn" data-nav="notes">📝<span>Notizen</span></button>
+      <button class="big-btn" data-nav="exercises">📚<span>Übungen</span></button>
       <button class="big-btn" data-nav="backup">💾<span>Backup</span></button>
     </div>
 
@@ -1260,6 +1288,28 @@ function viewTrainingDetail(id) {
       }).join('')}
     </div>
     <button class="btn btn-block" data-nav="teams" data-params='{"id":"${t.id}"}'>⚽ Teams aus diesem Training erstellen</button>
+
+    <div class="section-head"><span>Sitzungsplan${t.sessionPlan && t.sessionPlan.length ? ` · ${t.sessionPlan.reduce((a,i)=>a+i.duration,0)} Min.` : ''}</span></div>
+    <div class="list">
+      ${!t.sessionPlan || t.sessionPlan.length === 0 ? `<p class="empty">Noch kein Plan für dieses Training.</p>` : t.sessionPlan.map((item, idx) => `
+        <div class="session-item">
+          <div class="session-item-main">
+            <div class="card-title">${esc(item.name)}</div>
+            <div class="card-sub">${item.category ? esc(item.category) + ' · ' : ''}${item.duration} Min.</div>
+          </div>
+          <div class="session-item-actions">
+            <button data-action="moveSessionItem" data-id="${t.id}" data-item="${item.id}" data-dir="up" ${idx===0?'disabled':''}>↑</button>
+            <button data-action="moveSessionItem" data-id="${t.id}" data-item="${item.id}" data-dir="down" ${idx===t.sessionPlan.length-1?'disabled':''}>↓</button>
+            <button data-action="removeSessionItem" data-id="${t.id}" data-item="${item.id}">✕</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="row-actions">
+      <button class="btn" data-action="addSessionExercise" data-id="${t.id}">+ Aus Bibliothek</button>
+      <button class="btn" data-action="addCustomSessionBlock" data-id="${t.id}">+ Eigener Block</button>
+    </div>
+    ${t.sessionPlan && t.sessionPlan.length ? `<button class="btn btn-block" data-action="copySessionPlanWhatsApp" data-id="${t.id}">📋 Für WhatsApp kopieren</button>` : ''}
+
     <button class="btn btn-danger btn-block" data-action="deleteTraining" data-id="${t.id}">Training löschen</button>
   </main>
   ${tabbar()}`;
@@ -1376,11 +1426,15 @@ function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
     players.forEach((pl, i) => {
       const x = ((i + 1) / (n + 1)) * 100;
       const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === teamIdx && sel.playerId === pl.id;
-      slots += `<button class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
+      // Äußerer Bereich (Name) wählt zum Tauschen mit einem anderen Spieler aus;
+      // die kleine Positions-Markierung öffnet eine direkte Positionsauswahl für
+      // genau diesen einen Spieler - unabhängig davon, ob ein anderer Spieler
+      // diese Position gerade innehat.
+      slots += `<div class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
         data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">
-        <span class="mini-slot-pos">${pl.pos}</span>
+        <button class="mini-slot-pos" data-action="editPlayerPosition" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">${pl.pos}</button>
         <span class="mini-slot-name">${esc(pl.name)}</span>
-      </button>`;
+      </div>`;
     });
   });
   return `<div class="mini-pitch ${neutralStyle ? 'mini-pitch-neutral' : ''}">${slots}</div>`;
@@ -1915,6 +1969,61 @@ function renderPitch(m, formation) {
 
 /* --------------------------------- Backup -------------------------------------- */
 
+/* ------------------------------ Übungsbibliothek -------------------------------- */
+
+function viewExercises() {
+  const f = state.exerciseFilter;
+  let list = DB.exercises.slice();
+  if (f.category) list = list.filter(e => e.category === f.category);
+  list.sort((a,b) => a.name.localeCompare(b.name, 'de'));
+
+  return `
+  ${header('Übungen')}
+  <main class="content">
+    <button class="btn btn-primary btn-block" data-nav="exerciseForm" data-params='{}'>+ Neue Übung</button>
+
+    ${DB.exercises.length ? `<div class="filter-row">
+      <select id="exerciseCategoryFilter">
+        <option value="">Alle Kategorien</option>
+        ${CATEGORIES.map(c => `<option value="${c}" ${f.category===c?'selected':''}>${c}</option>`).join('')}
+      </select>
+    </div>` : ''}
+
+    <div class="list">
+      ${list.length === 0 ? `<p class="empty">${DB.exercises.length ? 'Keine Übungen für diesen Filter.' : 'Noch keine Übungen angelegt. Leg welche an, um sie später schnell in einen Sitzungsplan zu übernehmen.'}</p>` : list.map(ex => `
+        <div class="card card-tap" data-nav="exerciseForm" data-params='{"id":"${ex.id}"}'>
+          <div class="card-title">${esc(ex.name)}</div>
+          <div class="card-sub">${esc(ex.category)} · ${ex.duration} Min.${ex.materials ? ' · ' + esc(ex.materials) : ''}</div>
+          ${ex.description ? `<div class="card-body">${esc(ex.description)}</div>` : ''}
+        </div>`).join('')}
+    </div>
+  </main>
+  ${tabbar()}`;
+}
+
+function viewExerciseForm(id) {
+  const ex = id ? DB.exercises.find(x => x.id === id) : null;
+  return `
+  ${header(ex ? 'Übung bearbeiten' : 'Neue Übung', 'exercises')}
+  <main class="content">
+    <form class="form" data-form="exercise" data-id="${ex ? ex.id : ''}">
+      <label>Name</label>
+      <input name="name" required value="${ex ? esc(ex.name) : ''}">
+      <label>Kategorie</label>
+      <select name="category">${CATEGORIES.map(c => `<option value="${c}" ${ex && ex.category===c?'selected':''}>${c}</option>`).join('')}</select>
+      <label>Dauer (Minuten)</label>
+      <input name="duration" type="number" min="1" value="${ex ? ex.duration : 15}">
+      <label>Material (optional)</label>
+      <input name="materials" value="${ex ? esc(ex.materials||'') : ''}">
+      <label>Beschreibung (optional)</label>
+      <textarea name="description" rows="4">${ex ? esc(ex.description||'') : ''}</textarea>
+      <button class="btn btn-primary btn-block" type="submit">Speichern</button>
+      ${ex ? `<button type="button" class="btn btn-danger btn-block" data-action="deleteExercise" data-id="${ex.id}">Übung löschen</button>` : ''}
+    </form>
+  </main>
+  ${tabbar()}`;
+}
+
 function viewBackup() {
   const weekdays = DB.settings.trainingWeekdays || [];
   return `
@@ -1996,6 +2105,11 @@ document.addEventListener('change', (e) => {
   }
   if (e.target.id === 'playerSortBy') {
     state.playerFilter.sortBy = e.target.value;
+    render();
+  }
+  if (e.target.id === 'exerciseCategoryFilter') {
+    state.exerciseFilter = state.exerciseFilter || {};
+    state.exerciseFilter.category = e.target.value;
     render();
   }
   if (e.target.matches('[data-action="toggleImportRow"]')) {
@@ -2107,6 +2221,25 @@ document.addEventListener('submit', (e) => {
     saveDB();
     toast('Übernommen ✓');
     render();
+  } else if (type === 'exercise') {
+    let id = form.dataset.id;
+    const data = {
+      name: fd.get('name').trim(),
+      category: fd.get('category'),
+      duration: Math.max(1, parseInt(fd.get('duration')) || 15),
+      materials: fd.get('materials').trim(),
+      description: fd.get('description').trim(),
+    };
+    if (!data.name) { alert('Bitte einen Namen eingeben.'); return; }
+    if (id) {
+      Object.assign(DB.exercises.find(e => e.id === id), data);
+    } else {
+      id = uid('ex');
+      DB.exercises.push({ id, ...data });
+    }
+    saveDB();
+    toast('Gespeichert ✓');
+    nav('exercises');
   }
 });
 
@@ -2151,6 +2284,75 @@ function openDatePicker(defaultDate, onConfirm, title) {
   });
 }
 
+// Übung aus der Bibliothek zum Sitzungsplan eines Trainings hinzufügen. Übungen, deren
+// Kategorie zum aktuell empfohlenen Trainingsschwerpunkt passt, werden vorne gelistet.
+function openSessionExercisePicker(trainingId) {
+  const t = DB.trainings.find(x => x.id === trainingId);
+  const focusCats = openNotesGrouped().slice(0, 2).map(g => g.category);
+  const sorted = DB.exercises.slice().sort((a,b) => {
+    const fa = focusCats.includes(a.category) ? 0 : 1;
+    const fb = focusCats.includes(b.category) ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    return a.name.localeCompare(b.name, 'de');
+  });
+  const overlay = document.createElement('div');
+  overlay.className = 'sheet-overlay';
+  overlay.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-head">Übung hinzufügen<button class="icon-btn" id="sheetClose">✕</button></div>
+      ${sorted.length === 0 ? `<p class="muted">Noch keine Übungen in der Bibliothek.</p>` : `
+      <div class="sheet-list">
+        ${sorted.map(ex => `
+          <button class="sheet-item" data-pick="${ex.id}">
+            <span>${esc(ex.name)}${focusCats.includes(ex.category) ? ' <span class="focus-badge">🎯</span>' : ''}<br><span class="muted">${esc(ex.category)} · ${ex.duration} Min.</span></span>
+          </button>`).join('')}
+      </div>`}
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
+    const pickBtn = e.target.closest('[data-pick]');
+    if (!pickBtn) return;
+    const ex = DB.exercises.find(x => x.id === pickBtn.dataset.pick);
+    if (ex) {
+      t.sessionPlan = t.sessionPlan || [];
+      t.sessionPlan.push({ id: uid('sp'), name: ex.name, category: ex.category, duration: ex.duration, exerciseId: ex.id });
+      saveDB();
+    }
+    overlay.remove();
+    render();
+  });
+}
+
+// Einzelnen, nicht in der Bibliothek gespeicherten Block zum Sitzungsplan hinzufügen
+// (z.B. "Aufwärmen"), ohne extra eine Übung anlegen zu müssen.
+function openCustomSessionBlockSheet(trainingId) {
+  const overlay = document.createElement('div');
+  overlay.className = 'sheet-overlay';
+  overlay.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-head">Eigener Block<button class="icon-btn" id="sheetClose">✕</button></div>
+      <input type="text" id="customBlockName" placeholder="z.B. Aufwärmen" class="date-picker-input">
+      <input type="number" id="customBlockDuration" placeholder="Minuten" min="1" value="10" class="date-picker-input">
+      <button class="btn btn-primary btn-block" id="customBlockConfirm">Hinzufügen</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
+    if (e.target.id === 'customBlockConfirm') {
+      const name = document.getElementById('customBlockName').value.trim();
+      const duration = Math.max(1, parseInt(document.getElementById('customBlockDuration').value) || 10);
+      if (!name) { alert('Bitte einen Namen eingeben.'); return; }
+      const t = DB.trainings.find(x => x.id === trainingId);
+      t.sessionPlan = t.sessionPlan || [];
+      t.sessionPlan.push({ id: uid('sp'), name, category: null, duration, exerciseId: null });
+      saveDB();
+      overlay.remove();
+      render();
+    }
+  });
+}
+
 function handleAction(btn, e) {
   const action = btn.dataset.action;
   const id = btn.dataset.id;
@@ -2159,7 +2361,7 @@ function handleAction(btn, e) {
     const date = todayISO();
     const attendance = {};
     activePlayers().forEach(p => attendance[p.id] = 'offen');
-    const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' } };
+    const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' }, sessionPlan: [] };
     DB.trainings.push(t);
     saveDB();
     nav('trainingDetail', { id: t.id });
@@ -2168,7 +2370,7 @@ function handleAction(btn, e) {
     openDatePicker(todayISO(), (date) => {
       const attendance = {};
       activePlayers().forEach(p => attendance[p.id] = 'offen');
-      const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' } };
+      const t = { id: uid('t'), date, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' }, sessionPlan: [] };
       DB.trainings.push(t);
       saveDB();
       nav('trainingDetail', { id: t.id });
@@ -2182,6 +2384,35 @@ function handleAction(btn, e) {
       render();
     }, 'Datum ändern');
   }
+  else if (action === 'addSessionExercise') {
+    openSessionExercisePicker(id);
+  }
+  else if (action === 'addCustomSessionBlock') {
+    openCustomSessionBlockSheet(id);
+  }
+  else if (action === 'removeSessionItem') {
+    const t = DB.trainings.find(x => x.id === id);
+    t.sessionPlan = (t.sessionPlan || []).filter(i => i.id !== btn.dataset.item);
+    saveDB(); render();
+  }
+  else if (action === 'moveSessionItem') {
+    const t = DB.trainings.find(x => x.id === id);
+    const arr = t.sessionPlan || [];
+    const idx = arr.findIndex(i => i.id === btn.dataset.item);
+    const dir = btn.dataset.dir === 'up' ? -1 : 1;
+    const newIdx = idx + dir;
+    if (idx === -1 || newIdx < 0 || newIdx >= arr.length) return;
+    [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+    saveDB(); render();
+  }
+  else if (action === 'copySessionPlanWhatsApp') {
+    const t = DB.trainings.find(x => x.id === id);
+    let text = `📋 Trainingsplan ${fmtDate(t.date)}\n\n`;
+    (t.sessionPlan || []).forEach(item => { text += `- ${item.name} (${item.duration} Min.)\n`; });
+    const total = (t.sessionPlan || []).reduce((a,i) => a + i.duration, 0);
+    text += `\nGesamt: ${total} Minuten`;
+    copyToClipboard(text.trim());
+  }
   else if (action === 'setAttendance') {
     const t = DB.trainings.find(x => x.id === id);
     t.attendance[btn.dataset.player] = btn.dataset.status;
@@ -2193,9 +2424,17 @@ function handleAction(btn, e) {
     saveDB(); render();
   }
   else if (action === 'deleteTraining') {
-    if (!confirm('Training wirklich löschen?')) return;
-    DB.trainings = DB.trainings.filter(x => x.id !== id);
-    saveDB(); nav('trainingList');
+    if (!confirm('Sicher, dass du dieses Training endgültig löschen möchtest?')) return;
+    const idx = DB.trainings.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    const removed = DB.trainings[idx];
+    DB.trainings.splice(idx, 1);
+    saveDB();
+    nav('trainingList');
+    showUndoToast('Training gelöscht', () => {
+      DB.trainings.splice(idx, 0, removed);
+      saveDB(); render();
+    });
   }
   else if (action === 'setNumTeams') {
     const t = DB.trainings.find(x => x.id === id);
@@ -2257,6 +2496,11 @@ function handleAction(btn, e) {
     }
     copyToClipboard(text.trim());
   }
+  else if (action === 'editPlayerPosition') {
+    const rawTeamIdx = btn.dataset.teamIdx;
+    const teamIdx = rawTeamIdx === 'neutral' ? 'neutral' : parseInt(rawTeamIdx, 10);
+    openPlayerPositionPicker(id, teamIdx, btn.dataset.player);
+  }
   else if (action === 'teamPlayerClick') {
     const trainingId = id;
     const rawTeamIdx = btn.dataset.teamIdx;
@@ -2315,19 +2559,33 @@ function handleAction(btn, e) {
     if (hasData) {
       ok = confirm(`${p.name} hat bereits Trainings-, Notiz- oder Spieltagsdaten. Endgültiges Löschen entfernt den Spieler dauerhaft; seine bisherigen Einträge bleiben ohne Namen stehen.\n\nEmpfohlen: stattdessen nur deaktivieren.\n\nTrotzdem endgültig löschen?`);
     } else {
-      ok = confirm('Spieler wirklich endgültig löschen?');
+      ok = confirm('Sicher, dass du diesen Spieler endgültig löschen möchtest?');
     }
     if (!ok) return;
-    DB.players = DB.players.filter(x => x.id !== id);
-    saveDB(); nav('players');
+    const idx = DB.players.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    const removed = DB.players[idx];
+    DB.players.splice(idx, 1);
+    saveDB();
+    nav('players');
+    showUndoToast('Spieler gelöscht', () => {
+      DB.players.splice(idx, 0, removed);
+      saveDB(); render();
+    });
   }
   else if (action === 'deleteNote') {
-    if (!confirm('Notiz löschen?')) return;
-    const n = DB.notes.find(x => x.id === id);
-    const pid = n ? n.playerId : null;
-    DB.notes = DB.notes.filter(x => x.id !== id);
+    if (!confirm('Sicher, dass du diese Notiz endgültig löschen möchtest?')) return;
+    const idx = DB.notes.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    const removed = DB.notes[idx];
+    const pid = removed.playerId;
+    DB.notes.splice(idx, 1);
     saveDB();
     pid ? nav('playerProfile', { id: pid }) : nav('notes');
+    showUndoToast('Notiz gelöscht', () => {
+      DB.notes.splice(idx, 0, removed);
+      saveDB(); render();
+    });
   }
   else if (action === 'newGeneralNote') {
     const n = { id: uid('gn'), text: '', images: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -2363,10 +2621,17 @@ function handleAction(btn, e) {
     saveDB(); render();
   }
   else if (action === 'deleteGeneralNote') {
-    if (!confirm('Notiz wirklich löschen?')) return;
-    DB.generalNotes = DB.generalNotes.filter(x => x.id !== id);
+    if (!confirm('Sicher, dass du diese Notiz endgültig löschen möchtest?')) return;
+    const idx = DB.generalNotes.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    const removed = DB.generalNotes[idx];
+    DB.generalNotes.splice(idx, 1);
     saveDB();
     nav('notes');
+    showUndoToast('Notiz gelöscht', () => {
+      DB.generalNotes.splice(idx, 0, removed);
+      saveDB(); render();
+    });
   }
   else if (action === 'newMatch') {
     const m = {
@@ -2432,9 +2697,30 @@ function handleAction(btn, e) {
     copyToClipboard(text.trim());
   }
   else if (action === 'deleteMatch') {
-    if (!confirm('Spieltag wirklich löschen?')) return;
-    DB.matches = DB.matches.filter(x => x.id !== id);
-    saveDB(); nav('matchList');
+    if (!confirm('Sicher, dass du diesen Spieltag endgültig löschen möchtest?')) return;
+    const idx = DB.matches.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    const removed = DB.matches[idx];
+    DB.matches.splice(idx, 1);
+    saveDB();
+    nav('matchList');
+    showUndoToast('Spieltag gelöscht', () => {
+      DB.matches.splice(idx, 0, removed);
+      saveDB(); render();
+    });
+  }
+  else if (action === 'deleteExercise') {
+    if (!confirm('Sicher, dass du diese Übung endgültig löschen möchtest?')) return;
+    const idx = DB.exercises.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    const removed = DB.exercises[idx];
+    DB.exercises.splice(idx, 1);
+    saveDB();
+    nav('exercises');
+    showUndoToast('Übung gelöscht', () => {
+      DB.exercises.splice(idx, 0, removed);
+      saveDB(); render();
+    });
   }
   else if (action === 'toggleWeekday') {
     const val = parseInt(btn.dataset.val, 10);
@@ -2495,6 +2781,9 @@ function handleAction(btn, e) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    DB.settings.lastBackupAt = new Date().toISOString();
+    saveDB();
+    render();
     toast('Backup heruntergeladen ✓');
   }
   else if (action === 'importBackup') {
@@ -2580,6 +2869,43 @@ function toast(msg) {
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 1800);
 }
 
+/* ------------------------- Löschen mit Rückgängig-Fenster ------------------------- */
+
+let undoState = null;
+
+// Zeigt eine Löschbestätigung als Meldung mit "Rückgängig"-Button für einige Sekunden.
+// restoreFn() macht die Löschung bei Bedarf wieder rückgängig.
+function showUndoToast(message, restoreFn, duration) {
+  finalizeUndo();
+  const el = document.createElement('div');
+  el.className = 'toast toast-undo';
+  el.innerHTML = `<span>${esc(message)}</span><button type="button" id="undoBtn">Rückgängig</button>`;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('show'), 10);
+  const timer = setTimeout(() => { finalizeUndo(); }, duration || 8000);
+  undoState = { el, restoreFn, timer };
+  el.querySelector('#undoBtn').addEventListener('click', () => {
+    if (!undoState) return;
+    clearTimeout(undoState.timer);
+    const s = undoState;
+    undoState = null;
+    s.restoreFn();
+    s.el.classList.remove('show');
+    setTimeout(() => s.el.remove(), 300);
+    toast('Wiederhergestellt ✓');
+  });
+}
+
+// Beendet ein offenes Rückgängig-Fenster endgültig (Löschung bleibt bestehen).
+function finalizeUndo() {
+  if (!undoState) return;
+  clearTimeout(undoState.timer);
+  const s = undoState;
+  undoState = null;
+  s.el.classList.remove('show');
+  setTimeout(() => s.el.remove(), 300);
+}
+
 /* --------------------------------- Timer --------------------------------------- */
 
 function startTimer() {
@@ -2624,6 +2950,40 @@ function updateTimerDisplay() {
 }
 
 /* ------------------------------ Slot-Picker (Pitch) ------------------------------ */
+
+// Direkte Positionsauswahl für einen einzelnen Spieler in den Trainingsteams -
+// unabhängig davon, ob gerade ein anderer Spieler diese Position hat.
+function openPlayerPositionPicker(trainingId, teamIdx, playerId) {
+  const t = DB.trainings.find(x => x.id === trainingId);
+  const arr = teamIdx === 'neutral' ? (t.teamGen.neutral || []) : t.teamGen.teams[teamIdx];
+  const pl = arr && arr.find(p => p.id === playerId);
+  if (!pl) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'sheet-overlay';
+  overlay.innerHTML = `
+    <div class="sheet">
+      <div class="sheet-head">Position für ${esc(pl.name)}<button class="icon-btn" id="sheetClose">✕</button></div>
+      ${GROUP_ORDER.map(group => `
+        <div class="pos-pick-group-label">${GROUP_LABEL[group]}</div>
+        <div class="pos-pick-row">
+          ${POSITIONS.filter(pos => GROUP_OF[pos] === group).map(pos => `
+            <button class="pos-pick-btn ${pl.pos === pos ? 'active' : ''}" data-pos="${pos}">${pos}</button>
+          `).join('')}
+        </div>
+      `).join('')}
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
+    const posBtn = e.target.closest('[data-pos]');
+    if (!posBtn) return;
+    pl.pos = posBtn.dataset.pos;
+    overlay.remove();
+    saveDB(); render();
+    toast('Position geändert ✓');
+  });
+}
 
 function openSlotPicker(matchId, slotKey) {
   const m = DB.matches.find(x => x.id === matchId);
