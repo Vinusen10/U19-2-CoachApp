@@ -8,7 +8,7 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -196,6 +196,64 @@ const SEED_PLAYERS = [
   strength: '', devPoint: '', focus: '', avatar: defaultAvatarFor(id),
 }));
 
+// Beispielübungen inkl. fertiger Grafik, damit die Übungsbibliothek nicht leer startet
+// und als Vorlage dient, wie eigene Grafiken aufgebaut werden können.
+const SEED_EXERCISES = [
+  {
+    id: 'ex_seed1', name: 'Passdreieck', category: 'Technik', duration: 10,
+    description: 'Drei Spieler bilden ein Dreieck und passen sich den Ball zu. Nach jedem Pass hinterherlaufen und Position wechseln. Auf sauberen ersten Kontakt achten.',
+    materials: 'Ein Ball',
+    diagram: { elements: [
+      { id: 'e1', type: 'player', x: 25, y: 78 },
+      { id: 'e2', type: 'player', x: 75, y: 78 },
+      { id: 'e3', type: 'player', x: 50, y: 25 },
+      { id: 'e4', type: 'ball', x: 50, y: 60 },
+    ]},
+  },
+  {
+    id: 'ex_seed2', name: '1 gegen 1 auf Minitore', category: 'Zweikampf', duration: 12,
+    description: 'Zweikampf 1 gegen 1 auf zwei kleine Hütchentore. Angreifer startet mit Ball, Verteidiger schließt den Abstand. Nach Ballgewinn oder Torabschluss Rollenwechsel.',
+    materials: '4 Hütchen, ein Ball pro Paar',
+    diagram: { elements: [
+      { id: 'e1', type: 'player', x: 30, y: 82 },
+      { id: 'e2', type: 'player', x: 70, y: 18 },
+      { id: 'e3', type: 'ball', x: 30, y: 70 },
+      { id: 'e4', type: 'cone', x: 12, y: 50 },
+      { id: 'e5', type: 'cone', x: 25, y: 50 },
+      { id: 'e6', type: 'cone', x: 75, y: 50 },
+      { id: 'e7', type: 'cone', x: 88, y: 50 },
+    ]},
+  },
+  {
+    id: 'ex_seed3', name: 'Sprint-Parcours', category: 'Fitness', duration: 8,
+    description: 'Hütchen im Abstand von ca. 5 Metern aufstellen. Sprint zum ersten Hütchen, seitliches Ablaufen zum zweiten, Rückwärtslaufen zum dritten. 3 Durchgänge mit Pause.',
+    materials: '4 Hütchen',
+    diagram: { elements: [
+      { id: 'e1', type: 'player', x: 12, y: 90 },
+      { id: 'e2', type: 'cone', x: 15, y: 78 },
+      { id: 'e3', type: 'cone', x: 38, y: 58 },
+      { id: 'e4', type: 'cone', x: 61, y: 38 },
+      { id: 'e5', type: 'cone', x: 84, y: 18 },
+    ]},
+  },
+  {
+    id: 'ex_seed4', name: '4-Tore-Spiel', category: 'Taktik', duration: 15,
+    description: 'Zwei Teams spielen auf vier kleine Tore (je zwei pro Seite). Fördert Breite im Spielaufbau und schnelles Umschalten, sobald ein Tor droht.',
+    materials: '8 Hütchen für 4 Minitore, Leibchen',
+    diagram: { elements: [
+      { id: 'e1', type: 'cone', x: 8, y: 22 }, { id: 'e2', type: 'cone', x: 8, y: 36 },
+      { id: 'e3', type: 'cone', x: 8, y: 64 }, { id: 'e4', type: 'cone', x: 8, y: 78 },
+      { id: 'e5', type: 'cone', x: 92, y: 22 }, { id: 'e6', type: 'cone', x: 92, y: 36 },
+      { id: 'e7', type: 'cone', x: 92, y: 64 }, { id: 'e8', type: 'cone', x: 92, y: 78 },
+      { id: 'e9', type: 'player', x: 35, y: 50 }, { id: 'e10', type: 'player', x: 65, y: 50 },
+      { id: 'e11', type: 'ball', x: 50, y: 50 },
+    ]},
+  },
+];
+function cloneSeedExercises() {
+  return SEED_EXERCISES.map(e => ({ ...e, diagram: { elements: e.diagram.elements.map(el => ({...el})) } }));
+}
+
 /* ------------------------------ Storage --------------------------------- */
 
 function freshDB() {
@@ -206,8 +264,8 @@ function freshDB() {
     notes: [],
     generalNotes: [],
     matches: [],
-    exercises: [],
-    settings: { trainingWeekdays: [1, 4], lastBackupAt: null }, // Standard: Montag + Donnerstag
+    exercises: cloneSeedExercises(),
+    settings: { trainingWeekdays: [1, 4], lastBackupAt: null, exercisesSeeded: true }, // Standard: Montag + Donnerstag
   };
 }
 
@@ -243,8 +301,14 @@ function migrate(db) {
   db.exercises = db.exercises || [];
   db.trainings.forEach(t => { t.sessionPlan = t.sessionPlan || []; });
   if (!('lastBackupAt' in db.settings)) db.settings.lastBackupAt = null;
+  // Beispielübungen einmalig nachrüsten, falls noch keine eigenen angelegt wurden
+  // (nur beim allerersten Mal, damit absichtlich gelöschte Beispiele nicht zurückkehren).
+  if (!db.settings.exercisesSeeded) {
+    if (db.exercises.length === 0) db.exercises = cloneSeedExercises();
+    db.settings.exercisesSeeded = true;
+  }
   // Zukünftige Migrationen hier einhängen, z.B.:
-  // if (db.version < 7) { ...db.version = 7; }
+  // if (db.version < 8) { ...db.version = 8; }
   db.version = DB_VERSION;
   return db;
 }
@@ -291,15 +355,25 @@ const WEEKDAYS = [
 // Legt für die kommenden `horizonDays` Tage automatisch Trainings an den in
 // DB.settings.trainingWeekdays hinterlegten Wochentagen an, sofern an dem Datum
 // noch kein Training existiert. Gibt die Anzahl neu angelegter Trainings zurück.
-function generateUpcomingTrainings(horizonDays) {
-  horizonDays = horizonDays || 14;
+// Legt so lange Trainings an den in DB.settings.trainingWeekdays hinterlegten
+// Wochentagen an, bis insgesamt `count` anstehende Trainings (heute oder in der
+// Zukunft) existieren - unabhängig davon, wie viele Tage das umfasst. Bereits
+// vorhandene anstehende Trainings zählen mit, damit nicht immer wieder neue über
+// das Ziel hinaus entstehen.
+function generateUpcomingTrainings(count) {
+  count = count || 2;
   const weekdays = DB.settings.trainingWeekdays || [];
   if (!weekdays.length) return 0;
+  const todayStr = todayISO();
   const existingDates = new Set(DB.trainings.map(t => t.date));
+  const upcomingCount = DB.trainings.filter(t => t.date >= todayStr).length;
+  let needed = Math.max(0, count - upcomingCount);
+  if (needed === 0) return 0;
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   let created = 0;
-  for (let i = 0; i < horizonDays; i++) {
+  for (let i = 0; i < 60 && needed > 0; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() + i);
     if (!weekdays.includes(d.getDay())) continue;
@@ -310,6 +384,7 @@ function generateUpcomingTrainings(horizonDays) {
     DB.trainings.push({ id: uid('t'), date: iso, attendance, teamGen: { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' }, sessionPlan: [] });
     existingDates.add(iso);
     created++;
+    needed--;
   }
   if (created > 0) saveDB();
   return created;
@@ -462,6 +537,19 @@ function isTrainingComplete(t) {
   const values = Object.values(t.attendance || {});
   if (values.length === 0) return false;
   return values.every(s => s !== 'offen');
+}
+
+// Wählt das für "Teams erstellen" sinnvollste Standard-Training: zuerst das
+// heutige, sonst das nächste bevorstehende, sonst notfalls das zuletzt vergangene.
+function pickDefaultTraining() {
+  if (DB.trainings.length === 0) return null;
+  const todayStr = todayISO();
+  const today = DB.trainings.find(t => t.date === todayStr);
+  if (today) return today;
+  const future = DB.trainings.filter(t => t.date > todayStr).sort((a,b) => a.date < b.date ? -1 : 1);
+  if (future.length) return future[0];
+  const past = DB.trainings.filter(t => t.date < todayStr).sort((a,b) => b.date < a.date ? -1 : 1);
+  return past[0] || null;
 }
 
 function trainingsForPlayer(playerId) {
@@ -1017,6 +1105,7 @@ const state = {
   teamSwapSelection: null,
   detailsOpen: {},
   exerciseFilter: { category: '' },
+  sidebarOpen: false,
 };
 
 function isDetailsOpen(key, defaultOpen) {
@@ -1037,6 +1126,7 @@ function nav(route, params = {}) {
   state.history.push({ route: state.route, params: state.params });
   state.route = route;
   state.params = params;
+  state.sidebarOpen = false;
   window.scrollTo(0, 0);
   render();
 }
@@ -1166,7 +1256,7 @@ function viewDashboard() {
         <div class="brand-sub">Trainer-Cockpit</div>
       </div>
     </div>
-    <button class="icon-btn" data-nav="backup" title="Backup">⋮</button>
+    <button class="icon-btn" data-action="toggleSidebar" title="Menü">☰</button>
   </header>
   <main class="content">
     ${showBackupReminder ? `<div class="callout callout--backup">
@@ -1187,22 +1277,35 @@ function viewDashboard() {
       <div class="callout-body">${esc(focus)}</div>
     </div>` : ''}
 
-    <div class="big-nav">
-      <button class="big-btn" data-nav="trainingList">📋<span>Training</span></button>
-      <button class="big-btn" data-nav="teams">⚽<span>Teams erstellen</span></button>
-      <button class="big-btn" data-nav="matchList">🏟️<span>Spieltag</span></button>
-      <button class="big-btn" data-nav="players">👥<span>Spieler</span></button>
-      <button class="big-btn" data-nav="notes">📝<span>Notizen</span></button>
-      <button class="big-btn" data-nav="exercises">📚<span>Übungen</span></button>
-      <button class="big-btn" data-nav="backup">💾<span>Backup</span></button>
-    </div>
-
     ${hints.length ? `<div class="callout callout--hints">
       <div class="callout-title">Hinweise (${hints.length})</div>
       <ul class="hint-list">${hints.map(h => `<li class="hint-item hint-${h.level}">${esc(h.text)}</li>`).join('')}</ul>
     </div>` : ''}
   </main>
+  ${renderDashboardSidebar()}
   ${tabbar()}`;
+}
+
+function renderDashboardSidebar() {
+  if (!state.sidebarOpen) return '';
+  const items = [
+    { nav: 'trainingList', icon: '📋', label: 'Training' },
+    { nav: 'teams', icon: '⚽', label: 'Teams erstellen' },
+    { nav: 'matchList', icon: '🏟️', label: 'Spieltag' },
+    { nav: 'players', icon: '👥', label: 'Spieler' },
+    { nav: 'notes', icon: '📝', label: 'Notizen' },
+    { nav: 'exercises', icon: '📚', label: 'Übungen' },
+    { nav: 'backup', icon: '💾', label: 'Backup' },
+  ];
+  return `
+  <div class="sidebar-overlay show" data-action="closeSidebar"></div>
+  <nav class="sidebar-panel show">
+    <div class="sidebar-head">
+      <span>Menü</span>
+      <button class="icon-btn" data-action="closeSidebar">✕</button>
+    </div>
+    ${items.map(it => `<button class="sidebar-nav-item" data-nav="${it.nav}"><span>${it.icon}</span>${it.label}</button>`).join('')}
+  </nav>`;
 }
 
 /* ------------------------------- Training ----------------------------------- */
@@ -1319,7 +1422,7 @@ function viewTrainingDetail(id) {
 
 function viewTeams(trainingId) {
   const trainings = DB.trainings.slice().sort((a,b) => b.date < a.date ? -1 : b.date > a.date ? 1 : 0);
-  const t = trainingId ? DB.trainings.find(x => x.id === trainingId) : trainings[0];
+  const t = trainingId ? DB.trainings.find(x => x.id === trainingId) : pickDefaultTraining();
 
   if (!t) {
     return `${header('Teams erstellen')}
@@ -1971,6 +2074,30 @@ function renderPitch(m, formation) {
 
 /* ------------------------------ Übungsbibliothek -------------------------------- */
 
+// Zeichnet ein Übungs-Spielfeld mit Spielern (nummeriert nach Ablaufreihenfolge),
+// Bällen und Hütchen/Material. Im editable-Modus sind die Elemente per Ziehen
+// verschiebbar und haben ein kleines Löschen-Kreuz.
+function renderDiagramField(diagram, editable, ownerId) {
+  const elements = (diagram && diagram.elements) || [];
+  let playerCount = 0;
+  const items = elements.map(el => {
+    let content;
+    if (el.type === 'player') {
+      playerCount++;
+      content = `<span class="diagram-num">${playerCount}</span>`;
+    } else if (el.type === 'ball') {
+      content = '⚽';
+    } else {
+      content = '🔶';
+    }
+    return `<div class="diagram-el diagram-${el.type} ${editable ? 'diagram-el-editable' : ''}" style="left:${el.x}%; top:${el.y}%;" data-el-id="${el.id}">
+      ${content}
+      ${editable ? `<button type="button" class="diagram-el-remove" data-action="removeDiagramElement" data-id="${ownerId}" data-el="${el.id}">✕</button>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="diagram-field ${editable ? 'diagram-field-editable' : ''}" data-owner="${ownerId || ''}">${items}</div>`;
+}
+
 function viewExercises() {
   const f = state.exerciseFilter;
   let list = DB.exercises.slice();
@@ -1990,8 +2117,9 @@ function viewExercises() {
     </div>` : ''}
 
     <div class="list">
-      ${list.length === 0 ? `<p class="empty">${DB.exercises.length ? 'Keine Übungen für diesen Filter.' : 'Noch keine Übungen angelegt. Leg welche an, um sie später schnell in einen Sitzungsplan zu übernehmen.'}</p>` : list.map(ex => `
+      ${list.length === 0 ? `<p class="empty">${DB.exercises.length ? 'Keine Übungen für diesen Filter.' : 'Noch keine Übungen angelegt.'}</p>` : list.map(ex => `
         <div class="card card-tap" data-nav="exerciseForm" data-params='{"id":"${ex.id}"}'>
+          ${ex.diagram && ex.diagram.elements && ex.diagram.elements.length ? renderDiagramField(ex.diagram, false) : ''}
           <div class="card-title">${esc(ex.name)}</div>
           <div class="card-sub">${esc(ex.category)} · ${ex.duration} Min.${ex.materials ? ' · ' + esc(ex.materials) : ''}</div>
           ${ex.description ? `<div class="card-body">${esc(ex.description)}</div>` : ''}
@@ -2020,6 +2148,18 @@ function viewExerciseForm(id) {
       <button class="btn btn-primary btn-block" type="submit">Speichern</button>
       ${ex ? `<button type="button" class="btn btn-danger btn-block" data-action="deleteExercise" data-id="${ex.id}">Übung löschen</button>` : ''}
     </form>
+
+    <div class="section-head"><span>Grafik</span></div>
+    ${ex ? `
+      ${renderDiagramField(ex.diagram, true, ex.id)}
+      <div class="row-actions">
+        <button type="button" class="btn" data-action="addDiagramElement" data-id="${ex.id}" data-type="player">+ Spieler</button>
+        <button type="button" class="btn" data-action="addDiagramElement" data-id="${ex.id}" data-type="ball">+ Ball</button>
+        <button type="button" class="btn" data-action="addDiagramElement" data-id="${ex.id}" data-type="cone">+ Hütchen</button>
+      </div>
+      <p class="muted small-note">Elemente lassen sich auf dem Feld verschieben. Spieler sind automatisch nach Reihenfolge des Hinzufügens nummeriert (1 = zuerst gesetzt).</p>
+      ${ex.diagram && ex.diagram.elements && ex.diagram.elements.length ? `<button type="button" class="btn" data-action="clearDiagram" data-id="${ex.id}">Grafik leeren</button>` : ''}
+    ` : `<p class="muted small-note">Erst speichern, dann kannst du eine Grafik hinzufügen.</p>`}
   </main>
   ${tabbar()}`;
 }
@@ -2031,7 +2171,7 @@ function viewBackup() {
   <main class="content">
     <div class="card">
       <div class="card-title">Trainingstage</div>
-      <p class="muted">An diesen Wochentagen werden automatisch für die kommenden 2 Wochen Trainings angelegt – neue Trainings erscheinen dann von selbst unter „Training", ohne dass du sie manuell erstellen musst.</p>
+      <p class="muted">An diesen Wochentagen werden automatisch die nächsten 2 anstehenden Trainings angelegt – neue Trainings erscheinen dann von selbst unter „Training", ohne dass du sie manuell erstellen musst.</p>
       <div class="weekday-row">
         ${WEEKDAYS.map(w => `<button class="weekday-btn ${weekdays.includes(w.val)?'active':''}" data-action="toggleWeekday" data-val="${w.val}">${w.label}</button>`).join('')}
       </div>
@@ -2064,6 +2204,43 @@ document.addEventListener('toggle', (e) => {
     state.detailsOpen[el.dataset.remember] = el.open;
   }
 }, true);
+
+// Ziehen von Diagramm-Elementen (Spieler/Ball/Hütchen) auf dem Übungs-Spielfeld.
+// Position wird laufend nur visuell aktualisiert und erst beim Loslassen gespeichert.
+document.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.diagram-el-remove')) return;
+  const el = e.target.closest('.diagram-el-editable');
+  if (!el) return;
+  const field = el.closest('.diagram-field');
+  if (!field) return;
+  e.preventDefault();
+  const ownerId = field.dataset.owner;
+  const elId = el.dataset.elId;
+  const fieldRect = field.getBoundingClientRect();
+
+  const clamp = v => Math.max(2, Math.min(98, v));
+  function onMove(ev) {
+    const x = clamp(((ev.clientX - fieldRect.left) / fieldRect.width) * 100);
+    const y = clamp(((ev.clientY - fieldRect.top) / fieldRect.height) * 100);
+    el.style.left = x + '%';
+    el.style.top = y + '%';
+    el.dataset.pendingX = x;
+    el.dataset.pendingY = y;
+  }
+  function onUp() {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    const x = parseFloat(el.dataset.pendingX);
+    const y = parseFloat(el.dataset.pendingY);
+    if (!isNaN(x) && !isNaN(y) && ownerId) {
+      const ex = DB.exercises.find(e2 => e2.id === ownerId);
+      const data = ex && ex.diagram && ex.diagram.elements.find(d => d.id === elId);
+      if (data) { data.x = x; data.y = y; saveDB(); }
+    }
+  }
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+});
 
 document.addEventListener('click', (e) => {
   const backBtn = e.target.closest('[data-back]');
@@ -2423,6 +2600,14 @@ function handleAction(btn, e) {
     Object.keys(t.attendance).forEach(pid => t.attendance[pid] = btn.dataset.status);
     saveDB(); render();
   }
+  else if (action === 'toggleSidebar') {
+    state.sidebarOpen = !state.sidebarOpen;
+    render();
+  }
+  else if (action === 'closeSidebar') {
+    state.sidebarOpen = false;
+    render();
+  }
   else if (action === 'deleteTraining') {
     if (!confirm('Sicher, dass du dieses Training endgültig löschen möchtest?')) return;
     const idx = DB.trainings.findIndex(x => x.id === id);
@@ -2722,6 +2907,30 @@ function handleAction(btn, e) {
       saveDB(); render();
     });
   }
+  else if (action === 'addDiagramElement') {
+    const ex = DB.exercises.find(x => x.id === id);
+    if (!ex) return;
+    ex.diagram = ex.diagram || { elements: [] };
+    const type = btn.dataset.type;
+    const n = ex.diagram.elements.length;
+    const x = 15 + (n % 5) * 18;
+    const y = 15 + Math.floor(n / 5) * 22;
+    ex.diagram.elements.push({ id: uid('de'), type, x: Math.min(90, x), y: Math.min(90, y) });
+    saveDB(); render();
+  }
+  else if (action === 'removeDiagramElement') {
+    const ex = DB.exercises.find(x => x.id === id);
+    if (!ex || !ex.diagram) return;
+    ex.diagram.elements = ex.diagram.elements.filter(e => e.id !== btn.dataset.el);
+    saveDB(); render();
+  }
+  else if (action === 'clearDiagram') {
+    if (!confirm('Grafik wirklich leeren?')) return;
+    const ex = DB.exercises.find(x => x.id === id);
+    if (!ex) return;
+    ex.diagram = { elements: [] };
+    saveDB(); render();
+  }
   else if (action === 'toggleWeekday') {
     const val = parseInt(btn.dataset.val, 10);
     DB.settings.trainingWeekdays = DB.settings.trainingWeekdays || [];
@@ -2729,12 +2938,12 @@ function handleAction(btn, e) {
     if (idx >= 0) DB.settings.trainingWeekdays.splice(idx, 1);
     else DB.settings.trainingWeekdays.push(val);
     saveDB();
-    const created = generateUpcomingTrainings(14);
+    const created = generateUpcomingTrainings(2);
     render();
     if (created > 0) toast(`${created} Training(s) angelegt ✓`);
   }
   else if (action === 'fillTrainings') {
-    const created = generateUpcomingTrainings(14);
+    const created = generateUpcomingTrainings(2);
     render();
     toast(created > 0 ? `${created} Training(s) angelegt ✓` : 'Bereits alles angelegt ✓');
   }
@@ -3089,7 +3298,7 @@ function registerServiceWorker() {
 
 /* ---------------------------------- Init ----------------------------------------- */
 
-const autoCreatedTrainings = generateUpcomingTrainings(14);
+const autoCreatedTrainings = generateUpcomingTrainings(2);
 render();
 if (autoCreatedTrainings > 0) toast(`${autoCreatedTrainings} Training(s) automatisch angelegt ✓`);
 registerServiceWorker();
