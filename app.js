@@ -193,7 +193,7 @@ const SEED_PLAYERS = [
   ['p22','Lutalo',2010,'OM','DM'],
 ].map(([id,name,jahrgang,posPrimary,posSecondary]) => ({
   id, name, jahrgang, posPrimary, posSecondary, active: true,
-  strength: '', devPoint: '', focus: '', avatar: defaultAvatarFor(id),
+  strength: '', devPoint: '', focus: '', avatar: defaultAvatarFor(id), birthday: null,
 }));
 
 // Beispielübungen inkl. fertiger Grafik, damit die Übungsbibliothek nicht leer startet
@@ -273,6 +273,7 @@ function migrate(db) {
   if (!db.version) db.version = 1;
   db.players = (db.players || []).map(p => {
     if (!p.avatar) p.avatar = defaultAvatarFor(p.id);
+    if (!('birthday' in p)) p.birthday = null;
     return p;
   });
   db.generalNotes = db.generalNotes || [];
@@ -511,6 +512,22 @@ function fmtDateTime(iso) {
 function monthLabel(ym) {
   const [y,m] = ym.split('-');
   return MONTH_NAMES[parseInt(m,10)-1] + ' ' + y;
+}
+function fmtBirthday(bday) {
+  if (!bday) return null;
+  const parts = bday.split('-');
+  if (parts.length < 3) return null;
+  const m = parseInt(parts[1], 10), d = parseInt(parts[2], 10);
+  if (!m || !d) return null;
+  return `${d}. ${MONTH_NAMES[m-1]}`;
+}
+// Aktive Spieler, die heute Geburtstag haben, mit dem Alter, das sie heute erreichen.
+function todaysBirthdays() {
+  const todayMD = todayISO().slice(5);
+  const year = new Date().getFullYear();
+  return activePlayers()
+    .filter(p => p.birthday && p.birthday.slice(5) === todayMD)
+    .map(p => ({ name: p.name, age: year - p.jahrgang }));
 }
 function todayISO() {
   const d = new Date();
@@ -1246,6 +1263,7 @@ function viewDashboard() {
   const tq = teamQuote();
   const backupDays = daysSinceBackup();
   const showBackupReminder = backupDays === null || backupDays >= 21;
+  const birthdays = todaysBirthdays();
 
   return `
   <header class="topbar topbar--brand">
@@ -1259,6 +1277,11 @@ function viewDashboard() {
     <button class="icon-btn" data-action="toggleSidebar" title="Menü">☰</button>
   </header>
   <main class="content">
+    ${birthdays.length ? `<div class="callout callout--birthday">
+      <div class="callout-title">🎂 Geburtstag${birthdays.length > 1 ? 'e' : ''} heute</div>
+      <div class="callout-body">${birthdays.map(b => `${esc(b.name)} wird ${b.age}`).join(' · ')}</div>
+    </div>` : ''}
+
     ${showBackupReminder ? `<div class="callout callout--backup">
       <div class="callout-title">💾 Backup-Erinnerung</div>
       <div class="callout-body">${backupDays === null ? 'Noch nie gesichert.' : `Letztes Backup vor ${backupDays} Tagen.`} Jetzt sichern, damit nichts verloren geht.</div>
@@ -1529,13 +1552,12 @@ function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
     players.forEach((pl, i) => {
       const x = ((i + 1) / (n + 1)) * 100;
       const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === teamIdx && sel.playerId === pl.id;
-      // Äußerer Bereich (Name) wählt zum Tauschen mit einem anderen Spieler aus;
-      // die kleine Positions-Markierung öffnet eine direkte Positionsauswahl für
-      // genau diesen einen Spieler - unabhängig davon, ob ein anderer Spieler
-      // diese Position gerade innehat.
+      // Ein Tipp: Spieler zum Tauschen auswählen (mit Team oder Position, je nach
+      // zweitem Ziel). Zwei Tipps auf denselben Spieler: direkte Positionsauswahl.
+      // Der ganze Chip ist EIN Tippbereich, damit auf dem Handy nichts knapp daneben geht.
       slots += `<div class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
         data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">
-        <button class="mini-slot-pos" data-action="editPlayerPosition" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">${pl.pos}</button>
+        <span class="mini-slot-pos">${pl.pos}</span>
         <span class="mini-slot-name">${esc(pl.name)}</span>
       </div>`;
     });
@@ -1567,7 +1589,7 @@ function renderTeamsResult(teams, trainingId, labels, neutral) {
   if (neutral && neutral.length) {
     html += `<p class="muted small-note">Neutral spielt bei der Mannschaft mit, die gerade den Ball hat – lässt sich genauso wie die anderen antippen und tauschen.</p>`;
   }
-  html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen: im selben Team tauscht ihr die Positionen, im anderen Team wechselt ihr die Seite (nochmal antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen zweiten – gleiches Team tauscht die Position, anderes Team tauscht die Seite.'}</p>`;
+  html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen, um zu tauschen (nochmal denselben antippen zum Abbrechen).' : 'Tipp: einmal antippen zum Tauschen mit einem zweiten Spieler, zweimal antippen für die direkte Positionswahl.'}</p>`;
   return html;
 }
 
@@ -1720,6 +1742,8 @@ function viewPlayerForm(id) {
       <input name="name" required value="${p ? esc(p.name) : ''}">
       <label>Jahrgang</label>
       <input name="jahrgang" type="number" required value="${p ? p.jahrgang : ''}">
+      <label>Geburtstag (optional)</label>
+      <input name="birthday" type="date" value="${p && p.birthday ? p.birthday : ''}">
       <label>Primärposition</label>
       <select name="posPrimary">${POSITIONS.map(pos => `<option value="${pos}" ${p && p.posPrimary===pos?'selected':''}>${pos}</option>`).join('')}</select>
       <label>Sekundärposition (optional)</label>
@@ -1758,7 +1782,7 @@ function viewPlayerProfile(id) {
       </button>
       <div>
         <div class="profile-name">${esc(p.name)} ${!p.active?'<span class="badge-off">inaktiv</span>':''}</div>
-        <div class="muted">Jg. ${p.jahrgang} · ${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''}</div>
+        <div class="muted">Jg. ${p.jahrgang} · ${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''}${p.birthday ? ' · 🎂 ' + fmtBirthday(p.birthday) : ''}</div>
       </div>
     </div>
 
@@ -2205,6 +2229,19 @@ document.addEventListener('toggle', (e) => {
   }
 }, true);
 
+// Doppelklick/Doppel-Tipp auf einen Spieler-Chip in den Trainingsteams öffnet die
+// direkte Positionsauswahl (statt einem eigenen, schwer zu treffenden Knopf).
+document.addEventListener('dblclick', (e) => {
+  const el = e.target.closest('.mini-slot');
+  if (!el) return;
+  e.preventDefault();
+  const rawTeamIdx = el.dataset.teamIdx;
+  const teamIdx = rawTeamIdx === 'neutral' ? 'neutral' : parseInt(rawTeamIdx, 10);
+  state.teamSwapSelection = null;
+  openPlayerPositionPicker(el.dataset.id, teamIdx, el.dataset.player);
+  render();
+});
+
 // Ziehen von Diagramm-Elementen (Spieler/Ball/Hütchen) auf dem Übungs-Spielfeld.
 // Position wird laufend nur visuell aktualisiert und erst beim Loslassen gespeichert.
 document.addEventListener('pointerdown', (e) => {
@@ -2340,6 +2377,7 @@ document.addEventListener('submit', (e) => {
     const data = {
       name: fd.get('name').trim(),
       jahrgang: parseInt(fd.get('jahrgang')),
+      birthday: fd.get('birthday') || null,
       posPrimary: fd.get('posPrimary'),
       posSecondary: fd.get('posSecondary') || null,
       active: id ? fd.has('active') : true,
@@ -2680,11 +2718,6 @@ function handleAction(btn, e) {
       t.teamGen.neutral.forEach(pl => text += `- ${pl.name}\n`);
     }
     copyToClipboard(text.trim());
-  }
-  else if (action === 'editPlayerPosition') {
-    const rawTeamIdx = btn.dataset.teamIdx;
-    const teamIdx = rawTeamIdx === 'neutral' ? 'neutral' : parseInt(rawTeamIdx, 10);
-    openPlayerPositionPicker(id, teamIdx, btn.dataset.player);
   }
   else if (action === 'teamPlayerClick') {
     const trainingId = id;

@@ -122,6 +122,9 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 .callout--hints { background: var(--card); border: 1px solid var(--border); }
 .callout--backup { background: var(--yellow-bg); border: 1px solid #f3c98a; }
 .callout--backup .btn { margin-top: 8px; }
+.callout--birthday { background: #fce7f3; border: 1px solid #f9a8d4; }
+.callout--birthday .callout-title { color: #9d174d; }
+.callout--birthday .callout-body { color: #9d174d; font-weight: 700; }
 
 /* ---------- Sitzungsplan ---------- */
 .session-item {
@@ -294,7 +297,7 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 .mini-slot {
   position: absolute; transform: translate(-50%, -50%);
   background: rgba(242,245,250,0.95); border: none; border-radius: 8px;
-  padding: 3px 5px; min-width: 46px; text-align: center; line-height: 1.15;
+  padding: 5px 6px; min-width: 50px; min-height: 34px; text-align: center; line-height: 1.15;
 }
 .mini-slot.is-selected { outline: 2px solid #fff; box-shadow: 0 0 0 3px rgba(10,47,112,0.5); }
 .mini-slot-pos {
