@@ -630,8 +630,8 @@ function attendanceDonutSVG(stats, size) {
   <svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
     <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#eef2fb" stroke-width="14"/>
     ${circles}
-    <text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="19" font-weight="800" fill="#111827">${stats.quote}%</text>
-    <text x="${cx}" y="${cy + 15}" text-anchor="middle" font-size="9" fill="#6b7280">Beteiligung</text>
+    <text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="19" font-weight="800" fill="currentColor">${stats.quote}%</text>
+    <text x="${cx}" y="${cy + 15}" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.6">Beteiligung</text>
   </svg>`;
 }
 
@@ -1079,6 +1079,30 @@ function autoArrangeStartXI(kaderIds, formationKey) {
   return { startElf, bench };
 }
 
+// Hält den Kader eines Spieltags mit den Zusagen synchron: wer absagt, fehlt
+// oder auf "Nicht im Kader" gesetzt wird, fliegt aus Kader und Startelf. Wer zusagt,
+// kommt automatisch auf die Bank, sofern schon ein Kader existiert und Platz ist.
+// Gibt eine kurze Meldung zurück, wenn sich etwas geändert hat.
+function syncKaderWithAvailability(m, pid) {
+  m.kader = m.kader || [];
+  m.startElf = m.startElf || {};
+  const status = m.availability[pid];
+  const p = playerById(pid);
+  const name = p ? p.name : 'Spieler';
+  const inKader = m.kader.includes(pid);
+  if (['abgesagt', 'unentschuldigt', 'nichtImKader'].includes(status) && inKader) {
+    m.kader = m.kader.filter(x => x !== pid);
+    let wasStarter = false;
+    Object.keys(m.startElf).forEach(slot => { if (m.startElf[slot] === pid) { delete m.startElf[slot]; wasStarter = true; } });
+    return `${name} aus dem Kader genommen${wasStarter ? ' – Startelf-Position ist jetzt frei' : ''}`;
+  }
+  if (status === 'zugesagt' && !inKader && m.kader.length > 0 && m.kader.length < m.kaderSize) {
+    m.kader.push(pid);
+    return `${name} auf die Bank gesetzt`;
+  }
+  return null;
+}
+
 function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
   const formation = FORMATIONS[formationKey];
   const candidates = activePlayers().filter(p => {
@@ -1123,6 +1147,8 @@ const state = {
   detailsOpen: {},
   exerciseFilter: { category: '' },
   sidebarOpen: false,
+  flashKeys: [],
+  matchTab: {},
 };
 
 function isDetailsOpen(key, defaultOpen) {
@@ -1205,6 +1231,8 @@ function render() {
   }
   app.innerHTML = html;
   bindNav();
+  // Flash-Markierungen gelten nur für genau dieses eine Rendern (Animation läuft einmal).
+  state.flashKeys = [];
 
   if (restore) {
     const el = restore.id ? document.getElementById(restore.id) : app.querySelector(`[name="${restore.name}"]`);
@@ -1215,6 +1243,14 @@ function render() {
       }
     }
   }
+}
+
+function emptyState(icon, text, btnHtml) {
+  return `<div class="empty-state"><div class="empty-icon">${icon}</div><p>${text}</p>${btnHtml || ''}</div>`;
+}
+
+function flashClass(key) {
+  return (state.flashKeys || []).includes(key) ? 'just-set' : '';
 }
 
 function bindNav() {
@@ -1288,6 +1324,9 @@ function viewDashboard() {
       <button class="btn btn-block" data-nav="backup">Zum Backup</button>
     </div>` : ''}
 
+    ${renderTodayCards()}
+
+    <div class="section-head"><span>Überblick</span></div>
     <div class="grid2">
       <div class="stat-card"><div class="stat-num">${activePlayers().length}</div><div class="stat-label">Spieler</div></div>
       <div class="stat-card"><div class="stat-num">${DB.trainings.filter(isTrainingComplete).length}</div><div class="stat-label">Trainings erfasst</div></div>
@@ -1307,6 +1346,58 @@ function viewDashboard() {
   </main>
   ${renderDashboardSidebar()}
   ${tabbar()}`;
+}
+
+const WEEKDAY_SHORT = ['So','Mo','Di','Mi','Do','Fr','Sa'];
+function relDayLabel(iso) {
+  const today = todayISO();
+  if (iso === today) return 'Heute';
+  const d = new Date(iso + 'T12:00:00');
+  const t = new Date(today + 'T12:00:00');
+  const diff = Math.round((d - t) / 86400000);
+  if (diff === 1) return 'Morgen';
+  return `${WEEKDAY_SHORT[d.getDay()]}, ${fmtDate(iso)}`;
+}
+
+// "Was steht als Nächstes an?" – nächstes Training und nächster offener Spieltag.
+function renderTodayCards() {
+  const today = todayISO();
+  const nextTraining = DB.trainings.filter(t => t.date >= today).sort((a,b) => a.date < b.date ? -1 : 1)[0];
+  const nextMatch = DB.matches.filter(m => m.date >= today && !m.completed).sort((a,b) => a.date < b.date ? -1 : 1)[0];
+  let html = '';
+  if (nextTraining) {
+    const vals = Object.values(nextTraining.attendance || {});
+    const offen = vals.filter(v => v === 'offen').length;
+    const da = vals.filter(v => v === 'anwesend').length;
+    const info = offen === vals.length ? 'Anwesenheit noch nicht erfasst' : (offen ? `${da} anwesend · ${offen} noch offen` : `${da} anwesend – erfasst ✓`);
+    html += `
+    <div class="today-card today-card--training" data-nav="trainingDetail" data-params='{"id":"${nextTraining.id}"}'>
+      <div class="today-icon">📋</div>
+      <div class="today-main">
+        <div class="today-label">${relDayLabel(nextTraining.date)} · Training</div>
+        <div class="today-info">${info}</div>
+      </div>
+      <div class="today-arrow">›</div>
+    </div>`;
+  }
+  if (nextMatch) {
+    const zu = activePlayers().filter(p => (nextMatch.availability || {})[p.id] === 'zugesagt').length;
+    const k = (nextMatch.kader || []).length;
+    const info = `${zu} Zusagen · ${k ? `Kader ${k}/${nextMatch.kaderSize}` : 'Kader noch offen'}`;
+    html += `
+    <div class="today-card today-card--match" data-nav="matchDetail" data-params='{"id":"${nextMatch.id}"}'>
+      <div class="today-icon">🏟️</div>
+      <div class="today-main">
+        <div class="today-label">${relDayLabel(nextMatch.date)} · ${esc(nextMatch.opponent ? 'gegen ' + nextMatch.opponent : 'Spieltag')}</div>
+        <div class="today-info">${info}</div>
+      </div>
+      <div class="today-arrow">›</div>
+    </div>`;
+  }
+  if (!html) {
+    html = emptyState('🌤️', 'Gerade steht nichts an. Trainings werden automatisch angelegt, Spieltage kannst du aus fußball.de importieren.');
+  }
+  return `<div class="section-head section-head--first"><span>Als Nächstes</span></div>${html}`;
 }
 
 function renderDashboardSidebar() {
@@ -1364,7 +1455,7 @@ function viewTrainingList() {
     </div>` : ''}
 
     <div class="list">
-      ${list.length === 0 ? `<p class="empty">Keine Trainings in diesem Zeitraum.</p>` : list.map(t => {
+      ${list.length === 0 ? (DB.trainings.length ? emptyState('📅', 'Keine Trainings in diesem Zeitraum.') : emptyState('📋', 'Noch keine Trainings angelegt.', '<button class="btn btn-primary" data-action="newTrainingToday">Erstes Training anlegen</button>')) : list.map(t => {
         const counts = { anwesend:0, abgesagt:0, unentschuldigt:0, offen:0 };
         Object.values(t.attendance).forEach(s => counts[s] = (counts[s]||0)+1);
         return `
@@ -1406,7 +1497,7 @@ function viewTrainingDetail(id) {
           <div class="attend-name">${esc(p.name)}</div>
           <div class="attend-btns">
             ${Object.entries(STATUS).map(([key, meta]) => `
-              <button class="status-btn ${meta.cls} ${s === key ? 'is-active' : ''}"
+              <button class="status-btn ${meta.cls} ${s === key ? 'is-active' : ''} ${s === key ? flashClass('att:'+p.id) : ''}"
                 data-action="setAttendance" data-id="${t.id}" data-player="${p.id}" data-status="${key}">${meta.label}</button>
             `).join('')}
           </div>
@@ -1417,7 +1508,7 @@ function viewTrainingDetail(id) {
 
     <div class="section-head"><span>Sitzungsplan${t.sessionPlan && t.sessionPlan.length ? ` · ${t.sessionPlan.reduce((a,i)=>a+i.duration,0)} Min.` : ''}</span></div>
     <div class="list">
-      ${!t.sessionPlan || t.sessionPlan.length === 0 ? `<p class="empty">Noch kein Plan für dieses Training.</p>` : t.sessionPlan.map((item, idx) => `
+      ${!t.sessionPlan || t.sessionPlan.length === 0 ? emptyState('🗒️', 'Noch kein Plan für dieses Training. Füge unten Übungen aus der Bibliothek oder eigene Blöcke hinzu.') : t.sessionPlan.map((item, idx) => `
         <div class="session-item">
           <div class="session-item-main">
             <div class="card-title">${esc(item.name)}</div>
@@ -1449,8 +1540,7 @@ function viewTeams(trainingId) {
 
   if (!t) {
     return `${header('Teams erstellen')}
-    <main class="content"><p class="empty">Erstelle zuerst ein Training mit Anwesenheit, um Teams zu bilden.</p>
-    <button class="btn btn-primary btn-block" data-nav="trainingList">Zum Training</button></main>${tabbar()}`;
+    <main class="content">${emptyState('⚽', 'Erstelle zuerst ein Training und trage die Anwesenheit ein – dann kannst du hier Teams bilden.', '<button class="btn btn-primary" data-nav="trainingList">Zum Training</button>')}</main>${tabbar()}`;
   }
 
   t.teamGen = t.teamGen || { numTeams: 2, posOverride: {}, teams: null, mode: 'strength' };
@@ -1555,7 +1645,7 @@ function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
       // Ein Tipp: Spieler zum Tauschen auswählen (mit Team oder Position, je nach
       // zweitem Ziel). Zwei Tipps auf denselben Spieler: direkte Positionsauswahl.
       // Der ganze Chip ist EIN Tippbereich, damit auf dem Handy nichts knapp daneben geht.
-      slots += `<div class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
+      slots += `<div class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''} ${flashClass('slot:' + pl.id)}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
         data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">
         <span class="mini-slot-pos">${pl.pos}</span>
         <span class="mini-slot-name">${esc(pl.name)}</span>
@@ -1678,7 +1768,7 @@ function viewPlayers() {
     </div>
 
     <div class="list">
-      ${players.length === 0 ? `<p class="empty">Keine Spieler gefunden.</p>` : players.map(p => {
+      ${players.length === 0 ? emptyState('🔍', 'Keine Spieler gefunden. Suche oder Positionsfilter anpassen.') : players.map(p => {
         const s = playerStats(p.id);
         const mq = matchQuoteValue(p.id);
         return `
@@ -1829,7 +1919,7 @@ function viewPlayerProfile(id) {
       <button class="btn btn-small" data-nav="noteForm" data-params='{"playerId":"${p.id}"}'>+ Notiz</button>
     </div>
     <div class="list">
-      ${notes.length === 0 ? `<p class="empty">Keine Notizen.</p>` : notes.map(n => noteCard(n)).join('')}
+      ${notes.length === 0 ? emptyState('📝', 'Noch keine Notizen zu diesem Spieler.', `<button class="btn btn-primary" data-nav="noteForm" data-params='{"playerId":"${p.id}"}'>Erste Notiz anlegen</button>`) : notes.map(n => noteCard(n)).join('')}
     </div>
   </main>
   ${tabbar()}`;
@@ -1880,7 +1970,7 @@ function viewNotes() {
     </details>` : ''}
 
     <div class="list">
-      ${general.length === 0 ? `<p class="empty">Noch keine Notizen. Tippe oben auf „+ Neue Notiz“ – z. B. um die nächste Trainingseinheit zu planen oder ein Foto von der Taktiktafel festzuhalten.</p>` : general.map(n => generalNoteCard(n)).join('')}
+      ${general.length === 0 ? emptyState('🗒️', 'Noch keine Notizen – z. B. für die Planung der nächsten Einheit oder ein Foto der Taktiktafel.', '<button class="btn btn-primary" data-action="newGeneralNote">Erste Notiz anlegen</button>') : general.map(n => generalNoteCard(n)).join('')}
     </div>
   </main>
   ${tabbar()}`;
@@ -1959,7 +2049,7 @@ function viewMatchList() {
     <button class="btn btn-primary btn-block" data-action="newMatch">+ Neuer Spieltag</button>
     <button class="btn btn-block" data-nav="importFussball">📋 Spielplan aus fußball.de importieren</button>
     <div class="list">
-      ${list.length === 0 ? `<p class="empty">Noch keine Spieltage gespeichert.</p>` : list.map(m => `
+      ${list.length === 0 ? emptyState('🏟️', 'Noch keine Spieltage angelegt.', '<button class="btn btn-primary" data-nav="importFussball">Spielplan importieren</button>') : list.map(m => `
         <div class="card card-tap" data-nav="matchDetail" data-params='{"id":"${m.id}"}'>
           <div class="card-title">${fmtDate(m.date)} vs. ${esc(m.opponent || '–')} ${!m.completed ? '<span class="badge-open">Offen</span>' : ''}</div>
           <div class="card-sub">${m.formation} · Kader ${((m.kader)||[]).length}/${m.kaderSize}</div>
@@ -2007,55 +2097,55 @@ function viewMatchDetail(id) {
   const kaderPlayers = (m.kader||[]).map(playerById).filter(Boolean);
   const benchIds = kaderPlayers.filter(p => !Object.values(m.startElf||{}).includes(p.id)).map(p=>p.id);
   const zugesagtCount = activePlayers().filter(p => (m.availability[p.id] || 'offen') === 'zugesagt').length;
+  const offenCount = activePlayers().filter(p => (m.availability[p.id] || 'offen') === 'offen').length;
+  const tab = state.matchTab[m.id] || (m.kader && m.kader.length ? 'aufstellung' : 'zusagen');
+  const title = `${fmtDate(m.date)}${m.opponent ? ' · ' + m.opponent : ''}`;
 
-  return `
-  ${header('Spieltag', 'matchList')}
-  <main class="content">
-    <form class="form form-inline" data-form="matchMeta" data-id="${m.id}">
-      <label>Datum</label><input name="date" type="date" value="${m.date}">
-      <label>Gegner</label><input name="opponent" value="${esc(m.opponent||'')}">
-      <label>Kadergröße</label><input name="kaderSize" type="number" min="11" max="30" value="${m.kaderSize}">
-      <label>Formation</label>
-      <select name="formation">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===m.formation?'selected':''}>${f}</option>`).join('')}</select>
-      <button class="btn btn-block" type="submit">Übernehmen</button>
-    </form>
-
-    <div class="card completed-card">
-      <label class="checkbox-row">
-        <input type="checkbox" data-action="toggleMatchCompleted" data-id="${m.id}" ${m.completed?'checked':''}>
-        Spieltag abgeschlossen
-      </label>
-      <p class="muted small-note">Erst wenn hier ein Haken gesetzt ist, fließt dieser Spieltag in die Einsatzstatistik der Spieler ein (Kader-/Startelf-Zählung im Profil). So verfälschen geplante, aber noch nicht gespielte Spieltage nichts.</p>
-    </div>
-
-    <div class="section-head"><span>Zusagen (${zugesagtCount}/${activePlayers().length})</span></div>
+  let body = '';
+  if (tab === 'zusagen') {
+    body = `
+    <div class="summary-line">${zugesagtCount} zugesagt · ${offenCount} offen</div>
     <div class="row-actions">
       <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="zugesagt">Alle zugesagt</button>
       <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="offen">Alle offen</button>
     </div>
-    <details class="details-block" data-remember="matchAvail-${m.id}" ${isDetailsOpen('matchAvail-'+m.id, !(m.kader && m.kader.length)) ? 'open' : ''}>
-      <summary>Zusagen einzeln erfassen</summary>
-      <div class="attend-list">
-        ${activePlayers().slice().sort((a,b)=>a.name.localeCompare(b.name,'de')).map(p => {
-          const s = m.availability[p.id] || 'offen';
-          return `<div class="attend-row">
-            <div class="attend-name">${esc(p.name)}</div>
-            <div class="attend-btns">
-              ${Object.entries(MATCH_STATUS).map(([key, meta]) => `
-                <button class="status-btn ${meta.cls} ${s === key ? 'is-active' : ''}"
-                  data-action="setMatchAvailability" data-id="${m.id}" data-player="${p.id}" data-status="${key}">${meta.label}</button>
-              `).join('')}
-            </div>
-          </div>`;
-        }).join('')}
-      </div>
-    </details>
+    <div class="attend-list">
+      ${activePlayers().slice().sort((a,b)=>a.name.localeCompare(b.name,'de')).map(p => {
+        const s = m.availability[p.id] || 'offen';
+        return `<div class="attend-row">
+          <div class="attend-name">${esc(p.name)}</div>
+          <div class="attend-btns">
+            ${Object.entries(MATCH_STATUS).map(([key, meta]) => `
+              <button class="status-btn ${meta.cls} ${s === key ? 'is-active' : ''} ${s === key ? flashClass('mav:'+p.id) : ''}"
+                data-action="setMatchAvailability" data-id="${m.id}" data-player="${p.id}" data-status="${key}">${meta.label}</button>
+            `).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="sticky-action">
+      <button class="btn btn-primary btn-block" data-action="kaderFromZusagen" data-id="${m.id}">✅ Zusagen in Kader übernehmen</button>
+    </div>`;
+  } else if (tab === 'aufstellung') {
+    body = `
+    <div class="select-row">
+      <label>Formation</label>
+      <select data-action="setMatchFormation" data-id="${m.id}">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===m.formation?'selected':''}>${f}</option>`).join('')}</select>
+    </div>
+    ${renderPitch(m, formation)}
+    <div class="text-actions">
+      <button class="link-btn" data-action="autoArrange" data-id="${m.id}">Startelf automatisch anordnen</button>
+      <button class="link-btn" data-action="autoKader" data-id="${m.id}">Kader + Startelf automatisch</button>
+    </div>
 
-    <button class="btn btn-primary btn-block" data-action="autoKader" data-id="${m.id}">Kader + Startelf automatisch</button>
+    <div class="section-head"><span>Bank</span></div>
+    <div class="chip-list">
+      ${benchIds.map(bid => `<span class="chip">${esc(playerById(bid).name)}</span>`).join('') || '<span class="muted">–</span>'}
+    </div>
 
     <div class="section-head"><span>Kader (${kaderPlayers.length}/${m.kaderSize})</span></div>
     <div class="chip-list">
-      ${kaderPlayers.map(p => `<span class="chip">${esc(p.name)} <button data-action="removeFromKader" data-id="${m.id}" data-player="${p.id}">✕</button></span>`).join('')}
+      ${kaderPlayers.map(p => `<span class="chip">${esc(p.name)} <button data-action="removeFromKader" data-id="${m.id}" data-player="${p.id}">✕</button></span>`).join('') || '<span class="muted">Noch leer – im Reiter „Zusagen" übernehmen.</span>'}
     </div>
     <details class="details-block" data-remember="addKader-${m.id}" ${isDetailsOpen('addKader-'+m.id, false) ? 'open' : ''}>
       <summary>Spieler zum Kader hinzufügen</summary>
@@ -2064,18 +2154,38 @@ function viewMatchDetail(id) {
       </div>
     </details>
 
-    <div class="section-head"><span>Grafische Startelf</span>
-      <button class="btn btn-small" data-action="autoArrange" data-id="${m.id}">Automatisch anordnen</button>
-    </div>
-    ${renderPitch(m, formation)}
+    <button class="btn btn-primary btn-block" data-action="copyMatchWhatsApp" data-id="${m.id}">📋 Für WhatsApp kopieren</button>`;
+  } else {
+    body = `
+    <form class="form" data-form="matchMeta" data-id="${m.id}">
+      <label>Datum</label><input name="date" type="date" value="${m.date}">
+      <label>Gegner</label><input name="opponent" value="${esc(m.opponent||'')}">
+      <label>Kadergröße</label><input name="kaderSize" type="number" min="11" max="30" value="${m.kaderSize}">
+      <button class="btn btn-primary btn-block" type="submit">Speichern</button>
+    </form>
 
-    <div class="section-head"><span>Bank</span></div>
-    <div class="chip-list">
-      ${benchIds.map(id => `<span class="chip">${esc(playerById(id).name)}</span>`).join('') || '<span class="muted">–</span>'}
+    <div class="card completed-card">
+      <label class="checkbox-row">
+        <input type="checkbox" data-action="toggleMatchCompleted" data-id="${m.id}" ${m.completed?'checked':''}>
+        Spieltag abgeschlossen
+      </label>
+      <p class="muted small-note">Erst mit Haken fließt der Spieltag in die Einsatzstatistik der Spieler ein.</p>
     </div>
 
-    <button class="btn btn-block" data-action="copyMatchWhatsApp" data-id="${m.id}">📋 Für WhatsApp kopieren</button>
-    <button class="btn btn-danger btn-block" data-action="deleteMatch" data-id="${m.id}">Spieltag löschen</button>
+    <button class="btn btn-danger btn-block" data-action="deleteMatch" data-id="${m.id}">Spieltag löschen</button>`;
+  }
+
+  return `
+  ${header(title, 'matchList')}
+  <div class="tab-strip">
+    <div class="segmented">
+      <button class="${tab==='zusagen'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="zusagen">Zusagen</button>
+      <button class="${tab==='aufstellung'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="aufstellung">Aufstellung</button>
+      <button class="${tab==='infos'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="infos">Infos</button>
+    </div>
+  </div>
+  <main class="content">
+    ${body}
   </main>
   ${tabbar()}`;
 }
@@ -2141,7 +2251,7 @@ function viewExercises() {
     </div>` : ''}
 
     <div class="list">
-      ${list.length === 0 ? `<p class="empty">${DB.exercises.length ? 'Keine Übungen für diesen Filter.' : 'Noch keine Übungen angelegt.'}</p>` : list.map(ex => `
+      ${list.length === 0 ? (DB.exercises.length ? emptyState('🔍', 'Keine Übungen in dieser Kategorie.') : emptyState('📚', 'Noch keine Übungen angelegt.', `<button class="btn btn-primary" data-nav="exerciseForm" data-params='{}'>Erste Übung anlegen</button>`)) : list.map(ex => `
         <div class="card card-tap" data-nav="exerciseForm" data-params='{"id":"${ex.id}"}'>
           ${ex.diagram && ex.diagram.elements && ex.diagram.elements.length ? renderDiagramField(ex.diagram, false) : ''}
           <div class="card-title">${esc(ex.name)}</div>
@@ -2300,6 +2410,14 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-action="chooseTraining"]')) {
     nav('teams', { id: e.target.value });
   }
+  if (e.target.matches('[data-action="setMatchFormation"]')) {
+    const m = DB.matches.find(x => x.id === e.target.dataset.id);
+    if (m) {
+      m.formation = e.target.value;
+      m.startElf = autoArrangeStartXI(m.kader || [], m.formation).startElf;
+      saveDB(); render();
+    }
+  }
   if (e.target.matches('[data-action="toggleMatchCompleted"]')) {
     const m = DB.matches.find(x => x.id === e.target.dataset.id);
     if (m) {
@@ -2423,7 +2541,7 @@ document.addEventListener('submit', (e) => {
     nav('playerProfile', { id: data.playerId });
   } else if (type === 'matchMeta') {
     const m = DB.matches.find(x => x.id === form.dataset.id);
-    const newFormation = fd.get('formation');
+    const newFormation = fd.get('formation') || m.formation;
     m.date = fd.get('date');
     m.opponent = fd.get('opponent');
     m.kaderSize = Math.max(11, parseInt(fd.get('kaderSize')) || 18);
@@ -2631,12 +2749,18 @@ function handleAction(btn, e) {
   else if (action === 'setAttendance') {
     const t = DB.trainings.find(x => x.id === id);
     t.attendance[btn.dataset.player] = btn.dataset.status;
+    state.flashKeys = ['att:' + btn.dataset.player];
     saveDB(); render();
   }
   else if (action === 'allAttendance') {
     const t = DB.trainings.find(x => x.id === id);
     Object.keys(t.attendance).forEach(pid => t.attendance[pid] = btn.dataset.status);
     saveDB(); render();
+  }
+  else if (action === 'setMatchTab') {
+    state.matchTab[id] = btn.dataset.tab;
+    window.scrollTo(0, 0);
+    render();
   }
   else if (action === 'toggleSidebar') {
     state.sidebarOpen = !state.sidebarOpen;
@@ -2750,18 +2874,18 @@ function handleAction(btn, e) {
       const tmpPos = teamA[idxA].pos;
       teamA[idxA].pos = teamB[idxB].pos;
       teamB[idxB].pos = tmpPos;
+      state.flashKeys = ['slot:' + sel.playerId, 'slot:' + playerId];
       saveDB();
       render();
-      toast('Positionen getauscht ✓');
       return;
     }
 
     const tmp = teamA[idxA];
     teamA[idxA] = teamB[idxB];
     teamB[idxB] = tmp;
+    state.flashKeys = ['slot:' + sel.playerId, 'slot:' + playerId];
     saveDB();
     render();
-    toast('Spieler getauscht ✓');
   }
   else if (action === 'timerStart') { startTimer(); }
   else if (action === 'timerPause') { pauseTimer(); }
@@ -2863,13 +2987,43 @@ function handleAction(btn, e) {
   }
   else if (action === 'setMatchAvailability') {
     const m = DB.matches.find(x => x.id === id);
-    m.availability[btn.dataset.player] = btn.dataset.status;
+    const pid = btn.dataset.player;
+    m.availability[pid] = btn.dataset.status;
+    state.flashKeys = ['mav:' + pid];
+    const msg = syncKaderWithAvailability(m, pid);
     saveDB(); render();
+    if (msg) toast(msg);
   }
   else if (action === 'allMatchAvailability') {
     const m = DB.matches.find(x => x.id === id);
     activePlayers().forEach(p => { m.availability[p.id] = btn.dataset.status; });
+    activePlayers().forEach(p => syncKaderWithAvailability(m, p.id));
     saveDB(); render();
+  }
+  else if (action === 'kaderFromZusagen') {
+    const m = DB.matches.find(x => x.id === id);
+    const zugesagt = activePlayers().filter(p => m.availability[p.id] === 'zugesagt');
+    if (zugesagt.length === 0) { toast('Noch keine Zusagen erfasst'); return; }
+    const hasManual = (m.kader && m.kader.length) || Object.keys(m.startElf||{}).length;
+    if (hasManual && !confirm('Kader und Startelf werden mit den Zusagen neu aufgebaut. Fortfahren?')) return;
+    // Mehr Zusagen als Kaderplätze: die mit der höchsten Trainingsbeteiligung kommen rein,
+    // positionsgerecht über dieselbe Logik wie die Automatik.
+    let kaderIds = zugesagt.map(p => p.id);
+    let cut = 0;
+    if (kaderIds.length > m.kaderSize) {
+      const onlyZugesagt = {};
+      activePlayers().forEach(p => { onlyZugesagt[p.id] = m.availability[p.id] === 'zugesagt' ? 'zugesagt' : 'abgesagt'; });
+      kaderIds = autoSelectKaderAndXI(m.formation, m.kaderSize, onlyZugesagt).kaderIds;
+      cut = zugesagt.length - kaderIds.length;
+    }
+    m.kader = kaderIds;
+    m.startElf = autoArrangeStartXI(kaderIds, m.formation).startElf;
+    state.matchTab[m.id] = 'aufstellung';
+    window.scrollTo(0, 0);
+    saveDB(); render();
+    toast(cut > 0
+      ? `${kaderIds.length} Zusagen übernommen – ${cut} zu viel, bitte als „Nicht im Kader" markieren`
+      : `${kaderIds.length} Zusagen übernommen ✓`);
   }
   else if (action === 'autoKader') {
     const m = DB.matches.find(x => x.id === id);
@@ -3222,8 +3376,8 @@ function openPlayerPositionPicker(trainingId, teamIdx, playerId) {
     if (!posBtn) return;
     pl.pos = posBtn.dataset.pos;
     overlay.remove();
+    state.flashKeys = ['slot:' + pl.id];
     saveDB(); render();
-    toast('Position geändert ✓');
   });
 }
 
