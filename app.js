@@ -1260,7 +1260,8 @@ function bindNav() {
 }
 function topLevel(route) {
   if (['dashboard'].includes(route)) return 'dashboard';
-  if (['trainingList','trainingDetail','exercises','exerciseForm'].includes(route)) return 'trainingList';
+  if (['trainingList','trainingDetail'].includes(route)) return 'trainingList';
+  if (['exercises','exerciseForm'].includes(route)) return 'exercises';
   if (['teams'].includes(route)) return 'teams';
   if (['matchList','matchDetail','importFussball'].includes(route)) return 'matchList';
   if (['players','playerProfile','playerForm'].includes(route)) return 'players';
@@ -1282,11 +1283,11 @@ function tabbar() {
   return `
   <nav class="tabbar">
     <button data-tab="dashboard" data-nav="dashboard"><span>🏠</span>Start</button>
+    <button data-tab="players" data-nav="players"><span>👥</span>Spieler</button>
     <button data-tab="trainingList" data-nav="trainingList"><span>📋</span>Training</button>
     <button data-tab="teams" data-nav="teams"><span>⚽</span>Teams</button>
     <button data-tab="matchList" data-nav="matchList"><span>🏟️</span>Spieltag</button>
-    <button data-tab="players" data-nav="players"><span>👥</span>Spieler</button>
-    <button data-tab="notes" data-nav="notes"><span>📝</span>Notizen</button>
+    <button data-tab="exercises" data-nav="exercises"><span>📚</span>Übungen</button>
   </nav>`;
 }
 
