@@ -1144,6 +1144,7 @@ const state = {
   trainingFilter: { period: 'all' },
   fussballImport: { raw: '', parsed: [] },
   teamSwapSelection: null,
+  matchSwapSelection: null,
   detailsOpen: {},
   exerciseFilter: { category: '' },
   sidebarOpen: false,
@@ -1170,6 +1171,8 @@ function nav(route, params = {}) {
   state.route = route;
   state.params = params;
   state.sidebarOpen = false;
+  state.teamSwapSelection = null;
+  state.matchSwapSelection = null;
   window.scrollTo(0, 0);
   render();
 }
@@ -1247,6 +1250,11 @@ function render() {
 
 function emptyState(icon, text, btnHtml) {
   return `<div class="empty-state"><div class="empty-icon">${icon}</div><p>${text}</p>${btnHtml || ''}</div>`;
+}
+
+const DOUBLE_TAP_MS = 450;
+function isDoubleTap(sel) {
+  return !!(sel && sel.at && (Date.now() - sel.at) < DOUBLE_TAP_MS);
 }
 
 function flashClass(key) {
@@ -1680,7 +1688,7 @@ function renderTeamsResult(teams, trainingId, labels, neutral) {
   if (neutral && neutral.length) {
     html += `<p class="muted small-note">Neutral spielt bei der Mannschaft mit, die gerade den Ball hat – lässt sich genauso wie die anderen antippen und tauschen.</p>`;
   }
-  html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen, um zu tauschen (nochmal denselben antippen zum Abbrechen).' : 'Tipp: einmal antippen zum Tauschen mit einem zweiten Spieler, zweimal antippen für die direkte Positionswahl.'}</p>`;
+  html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen, um zu tauschen (nochmal denselben antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen zweiten – sie tauschen ihren Platz (auch links ↔ rechts oder zwischen den Teams). Doppelt antippen: Position direkt wählen.'}</p>`;
   return html;
 }
 
@@ -2100,6 +2108,7 @@ function viewMatchDetail(id) {
   const zugesagtCount = activePlayers().filter(p => (m.availability[p.id] || 'offen') === 'zugesagt').length;
   const offenCount = activePlayers().filter(p => (m.availability[p.id] || 'offen') === 'offen').length;
   const tab = state.matchTab[m.id] || (m.kader && m.kader.length ? 'aufstellung' : 'zusagen');
+  const msel = state.matchSwapSelection;
   const title = `${fmtDate(m.date)}${m.opponent ? ' · ' + m.opponent : ''}`;
 
   let body = '';
@@ -2111,9 +2120,16 @@ function viewMatchDetail(id) {
       <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="offen">Alle offen</button>
     </div>
     <div class="attend-list">
-      ${activePlayers().slice().sort((a,b)=>a.name.localeCompare(b.name,'de')).map(p => {
+      ${activePlayers().slice().sort((a,b) => {
+        // Offene Rückmeldungen nach oben, damit nicht gescrollt werden muss
+        const oa = (m.availability[a.id] || 'offen') === 'offen' ? 0 : 1;
+        const ob = (m.availability[b.id] || 'offen') === 'offen' ? 0 : 1;
+        return oa - ob || a.name.localeCompare(b.name,'de');
+      }).map((p, idx, arr) => {
         const s = m.availability[p.id] || 'offen';
-        return `<div class="attend-row">
+        const prev = idx > 0 ? (m.availability[arr[idx-1].id] || 'offen') : null;
+        const divider = idx > 0 && prev === 'offen' && s !== 'offen' ? '<div class="list-divider">Bereits erfasst</div>' : '';
+        return `${divider}<div class="attend-row">
           <div class="attend-name">${esc(p.name)}</div>
           <div class="attend-btns">
             ${Object.entries(MATCH_STATUS).map(([key, meta]) => `
@@ -2134,22 +2150,29 @@ function viewMatchDetail(id) {
       <select data-action="setMatchFormation" data-id="${m.id}">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===m.formation?'selected':''}>${f}</option>`).join('')}</select>
     </div>
     ${renderPitch(m, formation)}
+
+    <div class="section-head"><span>Bank (${benchIds.length})</span></div>
+    <div class="chip-list bench-list">
+      ${benchIds.map(bid => {
+        const bp = playerById(bid);
+        const isSel = msel && msel.matchId === m.id && msel.kind === 'bench' && msel.playerId === bid;
+        return `<button class="chip bench-chip ${isSel ? 'is-selected' : ''} ${flashClass('bench:' + bid)}" data-action="benchClick" data-id="${m.id}" data-player="${bid}">${esc(bp.name)}</button>`;
+      }).join('') || '<span class="muted">Niemand auf der Bank.</span>'}
+    </div>
+    <p class="muted team-hint">${msel && msel.matchId === m.id
+      ? 'Jetzt den zweiten Spieler (Feld oder Bank) oder eine freie Position antippen. Nochmal denselben antippen zum Abbrechen.'
+      : 'Tipp: Spieler antippen, dann einen zweiten – sie tauschen die Plätze (auch Feld ↔ Bank). Doppelt antippen: Spieler geht auf die Bank.'}</p>
+
     <div class="text-actions">
       <button class="link-btn" data-action="autoArrange" data-id="${m.id}">Startelf automatisch anordnen</button>
-      <button class="link-btn" data-action="autoKader" data-id="${m.id}">Kader + Startelf automatisch</button>
     </div>
 
-    <div class="section-head"><span>Bank</span></div>
-    <div class="chip-list">
-      ${benchIds.map(bid => `<span class="chip">${esc(playerById(bid).name)}</span>`).join('') || '<span class="muted">–</span>'}
-    </div>
-
-    <div class="section-head"><span>Kader (${kaderPlayers.length}/${m.kaderSize})</span></div>
-    <div class="chip-list">
-      ${kaderPlayers.map(p => `<span class="chip">${esc(p.name)} <button data-action="removeFromKader" data-id="${m.id}" data-player="${p.id}">✕</button></span>`).join('') || '<span class="muted">Noch leer – im Reiter „Zusagen" übernehmen.</span>'}
-    </div>
-    <details class="details-block" data-remember="addKader-${m.id}" ${isDetailsOpen('addKader-'+m.id, false) ? 'open' : ''}>
-      <summary>Spieler zum Kader hinzufügen</summary>
+    <details class="details-block" data-remember="kaderEdit-${m.id}" ${isDetailsOpen('kaderEdit-'+m.id, !(m.kader && m.kader.length)) ? 'open' : ''}>
+      <summary>Kader bearbeiten (${kaderPlayers.length}/${m.kaderSize})</summary>
+      <div class="chip-list">
+        ${kaderPlayers.map(p => `<span class="chip">${esc(p.name)} <button data-action="removeFromKader" data-id="${m.id}" data-player="${p.id}">✕</button></span>`).join('') || '<span class="muted">Noch leer – im Reiter „Zusagen" übernehmen.</span>'}
+      </div>
+      <div class="small-note muted">Hinzufügen:</div>
       <div class="chip-list">
         ${activePlayers().filter(p => !(m.kader||[]).includes(p.id)).map(p => `<button class="chip chip-add" data-action="addToKader" data-id="${m.id}" data-player="${p.id}">+ ${esc(p.name)}</button>`).join('')}
       </div>
@@ -2192,17 +2215,78 @@ function viewMatchDetail(id) {
 }
 
 function renderPitch(m, formation) {
+  const sel = state.matchSwapSelection;
   return `
   <div class="pitch">
     ${formation.slots.map(slot => {
       const playerId = (m.startElf||{})[slot.key];
       const p = playerId ? playerById(playerId) : null;
-      return `<button class="pitch-slot" style="left:${slot.x}%; top:${slot.y}%;" data-action="openSlot" data-id="${m.id}" data-slot="${slot.key}">
+      const isSel = sel && sel.matchId === m.id && sel.kind === 'slot' && sel.slot === slot.key;
+      return `<button class="pitch-slot ${p ? '' : 'pitch-slot-empty'} ${isSel ? 'is-selected' : ''} ${flashClass('pslot:' + slot.key)}" style="left:${slot.x}%; top:${slot.y}%;" data-action="pitchSlotClick" data-id="${m.id}" data-slot="${slot.key}">
         <div class="pitch-pos">${slot.label}</div>
-        <div class="pitch-name">${p ? esc(p.name) : '–'}</div>
+        <div class="pitch-name">${p ? esc(p.name) : 'frei'}</div>
       </button>`;
     }).join('')}
   </div>`;
+}
+
+// Antippen in der Aufstellung: 1. Tipp wählt aus, 2. Tipp auf ein anderes Ziel tauscht.
+// Ziele sind Feldpositionen (auch freie) und Bankspieler. Doppelt antippen auf einen
+// Feldspieler schickt ihn auf die Bank.
+function handleLineupTap(m, target) {
+  m.startElf = m.startElf || {};
+  const sel = state.matchSwapSelection;
+  const same = sel && sel.matchId === m.id && sel.kind === target.kind &&
+    (target.kind === 'slot' ? sel.slot === target.slot : sel.playerId === target.playerId);
+
+  if (same) {
+    state.matchSwapSelection = null;
+    if (isDoubleTap(sel) && target.kind === 'slot' && m.startElf[target.slot]) {
+      const pid = m.startElf[target.slot];
+      delete m.startElf[target.slot];
+      state.flashKeys = ['bench:' + pid];
+      saveDB();
+    }
+    render();
+    return;
+  }
+  if (!sel || sel.matchId !== m.id) {
+    state.matchSwapSelection = { matchId: m.id, ...target, at: Date.now() };
+    render();
+    return;
+  }
+
+  const pidOf = t => t.kind === 'slot' ? (m.startElf[t.slot] || null) : t.playerId;
+  const a = sel, b = target;
+  const flashFor = (t, pid) => t.kind === 'slot' ? 'pslot:' + t.slot : 'bench:' + pid;
+
+  if (a.kind === 'bench' && b.kind === 'bench') {
+    // Zwei Bankspieler: nichts zu tauschen, einfach neu auswählen
+    state.matchSwapSelection = { matchId: m.id, ...target, at: Date.now() };
+    render();
+    return;
+  }
+  if (a.kind === 'slot' && b.kind === 'slot') {
+    const pa = pidOf(a), pb = pidOf(b);
+    if (!pa && !pb) {
+      state.matchSwapSelection = { matchId: m.id, ...target, at: Date.now() };
+      render();
+      return;
+    }
+    if (pb) m.startElf[a.slot] = pb; else delete m.startElf[a.slot];
+    if (pa) m.startElf[b.slot] = pa; else delete m.startElf[b.slot];
+    state.flashKeys = ['pslot:' + a.slot, 'pslot:' + b.slot];
+  } else {
+    // Feld <-> Bank: Bankspieler kommt auf die Position, bisheriger Spieler geht auf die Bank
+    const slotT = a.kind === 'slot' ? a : b;
+    const benchT = a.kind === 'bench' ? a : b;
+    const oldPid = m.startElf[slotT.slot] || null;
+    m.startElf[slotT.slot] = benchT.playerId;
+    state.flashKeys = ['pslot:' + slotT.slot].concat(oldPid ? ['bench:' + oldPid] : []);
+  }
+  state.matchSwapSelection = null;
+  saveDB();
+  render();
 }
 
 /* --------------------------------- Backup -------------------------------------- */
@@ -2340,19 +2424,6 @@ document.addEventListener('toggle', (e) => {
   }
 }, true);
 
-// Doppelklick/Doppel-Tipp auf einen Spieler-Chip in den Trainingsteams öffnet die
-// direkte Positionsauswahl (statt einem eigenen, schwer zu treffenden Knopf).
-document.addEventListener('dblclick', (e) => {
-  const el = e.target.closest('.mini-slot');
-  if (!el) return;
-  e.preventDefault();
-  const rawTeamIdx = el.dataset.teamIdx;
-  const teamIdx = rawTeamIdx === 'neutral' ? 'neutral' : parseInt(rawTeamIdx, 10);
-  state.teamSwapSelection = null;
-  openPlayerPositionPicker(el.dataset.id, teamIdx, el.dataset.player);
-  render();
-});
-
 // Ziehen von Diagramm-Elementen (Spieler/Ball/Hütchen) auf dem Übungs-Spielfeld.
 // Position wird laufend nur visuell aktualisiert und erst beim Loslassen gespeichert.
 document.addEventListener('pointerdown', (e) => {
@@ -2412,6 +2483,7 @@ document.addEventListener('change', (e) => {
     nav('teams', { id: e.target.value });
   }
   if (e.target.matches('[data-action="setMatchFormation"]')) {
+    state.matchSwapSelection = null;
     const m = DB.matches.find(x => x.id === e.target.dataset.id);
     if (m) {
       m.formation = e.target.value;
@@ -2759,6 +2831,7 @@ function handleAction(btn, e) {
     saveDB(); render();
   }
   else if (action === 'setMatchTab') {
+    state.matchSwapSelection = null;
     state.matchTab[id] = btn.dataset.tab;
     window.scrollTo(0, 0);
     render();
@@ -2852,12 +2925,16 @@ function handleAction(btn, e) {
     const sel = state.teamSwapSelection;
 
     if (!sel || sel.trainingId !== trainingId) {
-      state.teamSwapSelection = { trainingId, teamIdx, playerId };
+      state.teamSwapSelection = { trainingId, teamIdx, playerId, at: Date.now() };
       render();
       return;
     }
     if (sel.playerId === playerId && sel.teamIdx === teamIdx) {
       state.teamSwapSelection = null;
+      if (isDoubleTap(sel)) {
+        // Doppel-Tipp: direkte Positionsauswahl für genau diesen Spieler
+        openPlayerPositionPicker(trainingId, teamIdx, playerId);
+      }
       render();
       return;
     }
@@ -2871,10 +2948,15 @@ function handleAction(btn, e) {
     if (idxA === -1 || idxB === -1) { render(); return; }
 
     if (sel.teamIdx === teamIdx) {
-      // Gleiches Team: nur die Positionen der beiden Spieler tauschen.
-      const tmpPos = teamA[idxA].pos;
-      teamA[idxA].pos = teamB[idxB].pos;
-      teamB[idxB].pos = tmpPos;
+      // Gleiches Team: die beiden Spieler tauschen ihren Platz auf dem Feld.
+      // Position UND Reihenfolge werden getauscht - sonst bleiben z.B. zwei IV
+      // (links/rechts) optisch unverändert, weil beide dieselbe Bezeichnung haben.
+      const a = teamA[idxA], b = teamA[idxB];
+      const tmpPos = a.pos;
+      a.pos = b.pos;
+      b.pos = tmpPos;
+      teamA[idxA] = b;
+      teamA[idxB] = a;
       state.flashKeys = ['slot:' + sel.playerId, 'slot:' + playerId];
       saveDB();
       render();
@@ -3002,6 +3084,7 @@ function handleAction(btn, e) {
     saveDB(); render();
   }
   else if (action === 'kaderFromZusagen') {
+    state.matchSwapSelection = null;
     const m = DB.matches.find(x => x.id === id);
     const zugesagt = activePlayers().filter(p => m.availability[p.id] === 'zugesagt');
     if (zugesagt.length === 0) { toast('Noch keine Zusagen erfasst'); return; }
@@ -3027,6 +3110,7 @@ function handleAction(btn, e) {
       : `${kaderIds.length} Zusagen übernommen ✓`);
   }
   else if (action === 'autoKader') {
+    state.matchSwapSelection = null;
     const m = DB.matches.find(x => x.id === id);
     const hasManual = (m.kader && m.kader.length) || Object.keys(m.startElf||{}).length;
     if (hasManual && !confirm('Bestehender Kader und Startelf werden überschrieben. Fortfahren?')) return;
@@ -3036,25 +3120,33 @@ function handleAction(btn, e) {
     saveDB(); render();
   }
   else if (action === 'addToKader') {
+    state.matchSwapSelection = null;
     const m = DB.matches.find(x => x.id === id);
     m.kader = m.kader || [];
     if (!m.kader.includes(btn.dataset.player)) m.kader.push(btn.dataset.player);
     saveDB(); render();
   }
   else if (action === 'removeFromKader') {
+    state.matchSwapSelection = null;
     const m = DB.matches.find(x => x.id === id);
     m.kader = (m.kader||[]).filter(pid => pid !== btn.dataset.player);
     Object.keys(m.startElf||{}).forEach(slot => { if (m.startElf[slot] === btn.dataset.player) delete m.startElf[slot]; });
     saveDB(); render();
   }
   else if (action === 'autoArrange') {
+    state.matchSwapSelection = null;
     const m = DB.matches.find(x => x.id === id);
     const { startElf } = autoArrangeStartXI(m.kader||[], m.formation);
     m.startElf = startElf;
     saveDB(); render();
   }
-  else if (action === 'openSlot') {
-    openSlotPicker(id, btn.dataset.slot);
+  else if (action === 'pitchSlotClick') {
+    const m = DB.matches.find(x => x.id === id);
+    if (m) handleLineupTap(m, { kind: 'slot', slot: btn.dataset.slot });
+  }
+  else if (action === 'benchClick') {
+    const m = DB.matches.find(x => x.id === id);
+    if (m) handleLineupTap(m, { kind: 'bench', playerId: btn.dataset.player });
   }
   else if (action === 'copyMatchWhatsApp') {
     const m = DB.matches.find(x => x.id === id);
@@ -3378,48 +3470,6 @@ function openPlayerPositionPicker(trainingId, teamIdx, playerId) {
     pl.pos = posBtn.dataset.pos;
     overlay.remove();
     state.flashKeys = ['slot:' + pl.id];
-    saveDB(); render();
-  });
-}
-
-function openSlotPicker(matchId, slotKey) {
-  const m = DB.matches.find(x => x.id === matchId);
-  const formation = FORMATIONS[m.formation];
-  const slot = formation.slots.find(s => s.key === slotKey);
-  const allKaderPlayers = (m.kader||[]).map(playerById).filter(Boolean);
-  let kaderPlayers = allKaderPlayers
-    .map(p => ({ p, score: slotPickerScore(slot, p) }))
-    .filter(x => x.score > 0)
-    .sort((a,b) => b.score - a.score || a.p.name.localeCompare(b.p.name, 'de'))
-    .map(x => x.p);
-  const usedFallback = kaderPlayers.length === 0 && allKaderPlayers.length > 0;
-  if (usedFallback) kaderPlayers = allKaderPlayers;
-
-  const overlay = document.createElement('div');
-  overlay.className = 'sheet-overlay';
-  overlay.innerHTML = `
-    <div class="sheet">
-      <div class="sheet-head">Spieler für ${slot.label} wählen<button class="icon-btn" id="sheetClose">✕</button></div>
-      ${usedFallback ? `<p class="muted small-note">Kein Spieler im Kader passt auf diese Position – zeige den gesamten Kader.</p>` : ''}
-      <div class="sheet-list">
-        ${kaderPlayers.map(p => {
-          const currentSlot = Object.entries(m.startElf||{}).find(([,pid]) => pid === p.id);
-          return `<button class="sheet-item" data-pick="${p.id}">
-            ${avatarSVG(p.avatar, 28)}
-            <span>${esc(p.name)} <span class="muted">(${p.posPrimary}${p.posSecondary?'/'+p.posSecondary:''})</span></span>
-            ${currentSlot ? `<span class="pos-chip-dark">${currentSlot[0]}</span>` : ''}
-          </button>`;
-        }).join('')}
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay || e.target.id === 'sheetClose') { overlay.remove(); return; }
-    const pickBtn = e.target.closest('[data-pick]');
-    if (!pickBtn) return;
-    const newPlayerId = pickBtn.dataset.pick;
-    assignSlot(m, slotKey, newPlayerId);
-    overlay.remove();
     saveDB(); render();
   });
 }

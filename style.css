@@ -146,8 +146,7 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 /* ---------- Übungs-Diagramm (Feld mit Spielern/Ball/Material) ---------- */
 .diagram-field {
   position: relative; width: 100%; aspect-ratio: 3 / 1.6;
-  background: linear-gradient(180deg,#2e9e4f,#1f7d3c);
-  background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.06) 0 12%, transparent 12% 24%);
+  background: repeating-linear-gradient(0deg, rgba(255,255,255,0.07) 0 12%, transparent 12% 24%), linear-gradient(180deg,#2e9e4f,#1f7d3c);
   border-radius: 12px; overflow: hidden; margin: 10px 0;
 }
 .diagram-el {
@@ -295,8 +294,7 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 }
 .mini-pitch {
   position: relative; width: 100%; aspect-ratio: 3 / 1.7;
-  background: linear-gradient(180deg,#2e9e4f,#1f7d3c);
-  background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.06) 0 12%, transparent 12% 24%);
+  background: repeating-linear-gradient(0deg, rgba(255,255,255,0.07) 0 12%, transparent 12% 24%), linear-gradient(180deg,#2e9e4f,#1f7d3c);
 }
 .mini-slot {
   position: absolute; transform: translate(-50%, -50%);
@@ -389,10 +387,8 @@ button:active { transform: scale(0.96); opacity: 0.85; }
 
 /* ---------- Pitch ---------- */
 .pitch {
-  position: relative; width: 100%; aspect-ratio: 3/4; background: linear-gradient(180deg,#2e9e4f,#1f7d3c);
+  position: relative; width: 100%; aspect-ratio: 3/4; background: repeating-linear-gradient(0deg, rgba(255,255,255,0.07) 0 12%, transparent 12% 24%), linear-gradient(180deg,#2e9e4f,#1f7d3c);
   border-radius: var(--radius); margin: 10px 0; overflow: hidden;
-  background-image:
-    repeating-linear-gradient(0deg, rgba(255,255,255,0.06) 0 12%, transparent 12% 24%);
 }
 .pitch-slot {
   position: absolute; transform: translate(-50%, -50%);
@@ -599,4 +595,25 @@ input, select, textarea { color: var(--text); }
   .toast { background: #e6ebf3; color: #0e141d; }
   .sheet-overlay, .sidebar-overlay { background: rgba(0,0,0,0.6); }
   .list-avatar, .avatar-preview, .profile-avatar > svg { background: #1d3052; }
+}
+
+/* ======================================================================
+   Tauschen per Antippen (Spieltag-Aufstellung und Trainingsteams)
+   ====================================================================== */
+.pitch, .mini-pitch, .bench-list { touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+.pitch-slot { min-height: 38px; transition: box-shadow 0.15s ease; }
+.pitch-slot:active { transform: translate(-50%, -50%) scale(0.96); }
+.pitch-slot.is-selected { outline: 3px solid #ffd43b; box-shadow: 0 0 0 5px rgba(255,212,59,0.45); }
+.pitch-slot-empty { background: rgba(242,245,250,0.55); border: 1.5px dashed #ffffff; }
+.pitch-slot-empty .pitch-name { color: #33415c; font-weight: 600; }
+.pitch-slot.just-set { animation: slotPop 0.45s ease-out; }
+.mini-slot.is-selected { outline: 3px solid #ffd43b; box-shadow: 0 0 0 5px rgba(255,212,59,0.45); }
+
+.bench-chip { border: none; min-height: 36px; }
+.bench-chip.is-selected { background: #fff3bf; color: #10192b; box-shadow: 0 0 0 3px #ffd43b; }
+.bench-chip.just-set { animation: tapPop 0.4s ease-out; }
+
+.list-divider {
+  font-size: var(--fs-sm); font-weight: 700; color: var(--muted);
+  margin: 10px 2px 2px; padding-top: 8px; border-top: 1px solid var(--border);
 }
