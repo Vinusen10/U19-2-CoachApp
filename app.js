@@ -799,76 +799,190 @@ function effectivePosition(player, overrideMap) {
   return player.posPrimary;
 }
 
-// Ermittelt eine sinnvolle Formations-Richtgröße (Abwehr/Sechser/Mittelfeld/Sturm) für
-// eine gegebene Anzahl Feldspieler PRO TEAM (Torhüter nicht mitgezählt). Kleinere
-// Teams bekommen bewusst nur einen Sechser und eine Dreierkette statt einer vollen
-// Viererkette, damit nicht zu viele Spieler in der Abwehr "geparkt" werden.
-function computeFormationShape(perTeam) {
-  if (perTeam <= 0) return { def: 0, dm: 0, mid: 0, fwd: 0 };
-  let fwd = perTeam <= 8 ? 1 : 2;
-  let dm = perTeam <= 5 ? 0 : (perTeam <= 9 ? 1 : 2);
-  let def = perTeam <= 9 ? (perTeam <= 4 ? Math.max(1, perTeam - fwd - dm - 1) : 3) : 4;
-  let mid = perTeam - def - dm - fwd;
-  while (mid < 0 && def > 1) { def--; mid++; }
-  while (mid < 0 && fwd > 0) { fwd--; mid++; }
-  if (mid < 0) mid = 0;
-  return { def, dm, mid, fwd };
+// ======================================================================
+//  Trainingsteams: Aufstellung über feste Schablonen statt Positionstöpfe
+// ======================================================================
+//
+// Jedes Team bekommt je nach Anzahl Feldspieler eine sinnvolle Schablone
+// (max. 4 Verteidiger, Flügel besetzt, mind. ein zentraler Mittelfeldspieler,
+// immer ein Stürmer). Die Plätze werden der Reihe nach besetzt: zuerst mit
+// Spielern, die die Position als Hauptposition haben, dann als Nebenposition,
+// dann mit sinnvollen Ausweichlösungen. Überzählige Verteidiger mit Mittelfeld-
+// Nebenposition rutschen so automatisch ins Mittelfeld.
+
+// Positionsplätze: prim = passt als Haupt-/Nebenposition, fb = Ausweichlösung
+const TEAM_SLOT_DEF = {
+  ST: { prim: ['ST'],             fb: ['LF','RF','OM','LM','RM','ZM'] },
+  LM: { prim: ['LM','LF'],        fb: ['LV','RM','RF','OM','ZM'] },
+  RM: { prim: ['RM','RF'],        fb: ['RV','LM','LF','OM','ZM'] },
+  Z:  { prim: ['DM','ZM','OM'],   fb: ['IV','LM','RM'] },          // zentraler MF, egal ob 6er oder 10er
+  DM: { prim: ['DM','ZM'],        fb: ['IV','OM'] },
+  OM: { prim: ['OM','ZM'],        fb: ['ST','LF','RF','DM'] },     // kein 10er da -> Stürmer rückt nach hinten
+  ZM: { prim: ['ZM','DM','OM'],   fb: ['IV','LM','RM'] },
+  LV: { prim: ['LV'],             fb: ['IV','LM','RV'] },
+  RV: { prim: ['RV'],             fb: ['IV','RM','LV'] },
+  IV: { prim: ['IV'],             fb: ['DM','LV','RV'] },
+};
+
+// Schablone je Anzahl Feldspieler pro Team (Torhüter nicht mitgezählt)
+function teamTemplate(n) {
+  const base = {
+    1: ['Z'],
+    2: ['IV','ST'],
+    3: ['IV','Z','ST'],
+    4: ['IV','IV','Z','ST'],
+    5: ['LV','IV','RV','Z','ST'],
+    6: ['IV','IV','LM','Z','RM','ST'],
+    7: ['LV','IV','RV','LM','Z','RM','ST'],
+    8: ['LV','IV','IV','RV','LM','Z','RM','ST'],
+    9: ['LV','IV','IV','RV','LM','DM','OM','RM','ST'],
+    10: ['LV','IV','IV','RV','LM','DM','OM','RM','ST','ST'],
+  };
+  if (n <= 0) return [];
+  if (base[n]) return base[n].slice();
+  const t = base[10].slice();
+  const extra = ['ZM','IV','DM','OM','ST'];
+  for (let i = 0; t.length < n; i++) t.push(extra[i % extra.length]);
+  return t;
 }
 
-// Füllt Teams, die noch unter `perTeam` Spielern liegen, reihum (jeweils das kleinste
-// Team zuerst) mit den übrigen Spielern auf. Bei nicht exakt durch die Teamzahl
-// teilbarer Gesamtzahl bleibt am Ende genau ein Spieler neutral (keinem Team
-// zugeteilt), da er sonst ein Team größer als die anderen machen würde.
-function fillTeamsToSize(teams, leftoverPlayers, perTeam, posOf) {
-  // perTeam bezieht sich nur auf Feldspieler; Teams mit Torhüter dürfen daher ein
-  // Feld mehr bekommen, sonst würden sie fälschlich schon zu früh als "voll" gelten.
-  const targetSize = teams.map(t => perTeam + (t.some(p => p.pos === 'TW') ? 1 : 0));
-  const neutral = [];
-  leftoverPlayers.forEach(p => {
-    let idx = 0;
-    for (let i = 1; i < teams.length; i++) {
-      if (teams[i].length < teams[idx].length) idx = i;
-    }
-    const e = { id: p.id, name: p.name, pos: posOf(p) };
-    if (teams[idx].length < targetSize[idx]) teams[idx].push(e); else neutral.push(e);
-  });
-  return neutral;
+// Reihenfolge, in der die Plätze besetzt werden: knappe/wichtige Plätze zuerst
+const SLOT_FILL_ORDER = ['ST','Z','DM','OM','LM','RM','LV','RV','IV','ZM'];
+
+function playerPositions(p, overrideMap) {
+  const ov = overrideMap && overrideMap[p.id];
+  if (ov === 'secondary' && p.posSecondary) return [p.posSecondary, p.posPrimary];
+  return [p.posPrimary, p.posSecondary];
 }
 
-function generateTeams(presentIds, numTeams, overrideMap) {
+function slotFit(slotKey, p, overrideMap) {
+  const def = TEAM_SLOT_DEF[slotKey];
+  const [prim, sec] = playerPositions(p, overrideMap);
+  if (def.prim.includes(prim)) return 4;
+  if (sec && def.prim.includes(sec)) return 3;
+  if (def.fb.includes(prim)) return 2 - def.fb.indexOf(prim) * 0.05;
+  if (sec && def.fb.includes(sec)) return 1.5 - def.fb.indexOf(sec) * 0.05;
+  return 0.1;
+}
+
+// Welche Positionsbezeichnung bekommt ein Spieler auf diesem Platz?
+function slotLabel(slotKey, p, overrideMap) {
+  const [prim, sec] = playerPositions(p, overrideMap);
+  if (slotKey === 'Z') {
+    if (['DM','ZM','OM'].includes(prim)) return prim;
+    if (sec && ['DM','ZM','OM'].includes(sec)) return sec;
+    return 'ZM';
+  }
+  if (slotKey === 'LM') return (prim === 'LF' || (prim !== 'LM' && sec === 'LF')) ? 'LF' : 'LM';
+  if (slotKey === 'RM') return (prim === 'RF' || (prim !== 'RM' && sec === 'RF')) ? 'RF' : 'RM';
+  return slotKey;
+}
+
+// Kern: verteilt Feldspieler Platz für Platz auf die Teams.
+// mode: 'random' | 'strength' (Team A stärker) | 'offense_defense' (A Offensive, B Defensive)
+function draftTeams(presentIds, numTeams, mode, overrideMap) {
   const players = presentIds.map(playerById).filter(Boolean);
-  const posOf = p => effectivePosition(p, overrideMap);
-
-  const tws = shuffle(players.filter(p => posOf(p) === 'TW'));
-  let outfield = players.filter(p => posOf(p) !== 'TW');
-  const perTeam = Math.floor(outfield.length / numTeams);
-  const shape = computeFormationShape(perTeam);
+  const isTW = p => playerPositions(p, overrideMap)[0] === 'TW';
   const teams = Array.from({ length: numTeams }, () => []);
 
+  // --- Torhüter ---
+  let tws = players.filter(isTW);
+  if (mode === 'strength') tws = sortByStrengthDesc(tws);
+  else if (mode === 'offense_defense') tws = sortByLast5Desc(tws);
+  else tws = shuffle(tws);
+  // Bei nur einem Torwart: Stärke -> Team A, Offensive/Defensive -> Team B (Abwehr)
+  const twOrder = mode === 'offense_defense' ? [1, 0, 2] : (mode === 'random' ? shuffle([0,1,2].slice(0, numTeams)) : [0, 1, 2]);
+  let pool = players.filter(p => !isTW(p));
   tws.forEach((p, i) => {
-    if (i < numTeams) teams[i].push({ id: p.id, name: p.name, pos: 'TW' });
-    else outfield.push(p);
+    if (i < numTeams) teams[twOrder[i] != null ? twOrder[i] : i].push({ id: p.id, name: p.name, pos: 'TW' });
+    else pool.push(p); // überzählige Torhüter spielen im Feld mit
   });
 
-  const pools = {
-    DEF: shuffle(outfield.filter(p => GROUP_OF[posOf(p)] === 'DEF')),
-    DM:  shuffle(outfield.filter(p => posOf(p) === 'DM')),
-    MID: shuffle(outfield.filter(p => GROUP_OF[posOf(p)] === 'MID' && posOf(p) !== 'DM')),
-    FWD: shuffle(outfield.filter(p => GROUP_OF[posOf(p)] === 'FWD')),
-  };
-  const targets = { DEF: shape.def, DM: shape.dm, MID: shape.mid, FWD: shape.fwd };
-  const leftover = [];
-  ['DEF','DM','MID','FWD'].forEach(key => {
-    pools[key].forEach((p, i) => {
-      const teamIdx = i % numTeams;
-      const slot = Math.floor(i / numTeams);
-      if (slot < targets[key]) teams[teamIdx].push({ id: p.id, name: p.name, pos: posOf(p) });
-      else leftover.push(p);
+  const perTeam = Math.floor(pool.length / numTeams);
+  const template = teamTemplate(perTeam);
+  const order = template
+    .map((k, i) => ({ k, i }))
+    .sort((a, b) => SLOT_FILL_ORDER.indexOf(a.k) - SLOT_FILL_ORDER.indexOf(b.k) || a.i - b.i)
+    .map(x => x.k);
+
+  const strengthOf = p => mode === 'offense_defense' ? last5Quote(p.id) : playerStrengthScore(p.id);
+  if (mode === 'random') pool = shuffle(pool);
+
+  const take = p => { pool = pool.filter(x => x !== p); };
+  const put = (teamIdx, slotKey, p) => teams[teamIdx].push({ id: p.id, name: p.name, slot: slotKey, _p: p });
+  // Beste Kandidaten für einen Platz: nach Passung, dann (je nach Modus) nach Stärke
+  const ranked = (slotKey, bonus) => pool
+    .map((p, idx) => ({ p, fit: slotFit(slotKey, p, overrideMap) + (bonus ? bonus(p) : 0), str: strengthOf(p), idx }))
+    .sort((a, b) => (b.fit - a.fit) || (mode === 'random' ? a.idx - b.idx : (b.str - a.str)) || a.p.name.localeCompare(b.p.name, 'de'))
+    .map(x => x.p);
+
+  const ATTACKING = ['ST','LM','RM','OM'];
+  order.forEach((slotKey, round) => {
+    if (mode === 'offense_defense' && numTeams === 2) {
+      if (slotKey === 'Z' || slotKey === 'ZM') {
+        // Offensive bekommt den besten eher offensiven Zentralspieler, Defensive den besten eher defensiven
+        const offBonus = p => playerPositions(p, overrideMap).includes('OM') ? 0.5 : 0;
+        const defBonus = p => playerPositions(p, overrideMap).includes('DM') ? 0.5 : 0;
+        const a = ranked(slotKey, offBonus)[0]; if (a) { take(a); put(0, slotKey, a); }
+        const b = ranked(slotKey, defBonus)[0]; if (b) { take(b); put(1, slotKey, b); }
+        return;
+      }
+      const [best, second] = ranked(slotKey);
+      const goodTeam = ATTACKING.includes(slotKey) ? 0 : 1; // Angriffsplätze: Beste -> Offensive, Abwehrplätze: Beste -> Defensive
+      if (best) { take(best); put(goodTeam, slotKey, best); }
+      if (second) { take(second); put(1 - goodTeam, slotKey, second); }
+      return;
+    }
+    if (mode === 'strength') {
+      // Bester (passend + stärker) -> Team A, nächster -> Team B
+      for (let t = 0; t < numTeams; t++) {
+        const c = ranked(slotKey)[0];
+        if (c) { take(c); put(t, slotKey, c); }
+      }
+      return;
+    }
+    // Zufällig: Reihenfolge der Teams pro Platz wechseln, damit keiner immer zuerst wählt
+    for (let j = 0; j < numTeams; j++) {
+      const t = (round + j) % numTeams;
+      const c = ranked(slotKey)[0];
+      if (c) { take(c); put(t, slotKey, c); }
+    }
+  });
+
+  // Nachschritt je Team: Plätze innerhalb des Teams tauschen, solange es die Passung
+  // insgesamt verbessert (z.B. LV auf LV statt im Mittelfeld, 6er nicht in der Abwehr).
+  teams.forEach(team => {
+    const field = team.filter(e => e.slot);
+    let improved = true, guard = 0;
+    while (improved && guard++ < 50) {
+      improved = false;
+      for (let i = 0; i < field.length; i++) {
+        for (let j = i + 1; j < field.length; j++) {
+          const a = field[i], b = field[j];
+          if (a.slot === b.slot) continue;
+          const now = slotFit(a.slot, a._p, overrideMap) + slotFit(b.slot, b._p, overrideMap);
+          const swapped = slotFit(b.slot, a._p, overrideMap) + slotFit(a.slot, b._p, overrideMap);
+          if (swapped > now + 0.001) { const t = a.slot; a.slot = b.slot; b.slot = t; improved = true; }
+        }
+      }
+    }
+    team.forEach(e => {
+      if (e.slot) e.pos = slotLabel(e.slot, e._p, overrideMap);
+      delete e.slot; delete e._p;
     });
   });
 
-  const neutral = fillTeamsToSize(teams, shuffle(leftover), perTeam, posOf);
+  // Übrig bleibt nur bei ungerader Anzahl: neutraler Spieler. Er bekommt den Platz,
+  // der zu ihm am besten passt, damit er sinnvoll im Feld angezeigt wird.
+  const neutral = pool.map(p => {
+    const [prim] = playerPositions(p, overrideMap);
+    return { id: p.id, name: p.name, pos: prim === 'TW' ? 'ZM' : prim };
+  });
   return { teams, neutral };
+}
+
+function generateTeams(presentIds, numTeams, overrideMap) {
+  return draftTeams(presentIds, numTeams, 'random', overrideMap);
 }
 
 // Stärke-Score: kombiniert Trainingsbeteiligung (immer vorhanden) mit Spielbeteiligung
@@ -882,151 +996,34 @@ function playerStrengthScore(playerId) {
 }
 
 function sortByStrengthDesc(players) {
-  // Deterministisch (kein Zufalls-Tiebreaker mehr): "Nach Stärke" soll bei erneuter
-  // Berechnung (z.B. nach Positionsanpassung) nicht einfach neu durchmischen.
+  // Deterministisch: "Nach Stärke" soll bei erneuter Berechnung nicht neu durchmischen.
   return players
     .slice()
     .sort((a,b) => playerStrengthScore(b.id) - playerStrengthScore(a.id) || a.name.localeCompare(b.name, 'de'));
 }
 
-// Teilt anwesende Spieler in eine stärkere und eine schwächere Gruppe auf, getrennt nach
-// Trainings-/Spielbeteiligung, aber je Positionsgruppe (Verteidigung/Mittelfeld/Sturm), damit
-// beide Gruppen möglichst eine sinnvolle Positionsverteilung behalten. Die stärkere Gruppe
-// bekommt bevorzugt einen Torhüter, falls einer anwesend ist.
+// Team A = stärker, Team B = schwächer – Platz für Platz, damit beide sinnvoll aufgestellt sind.
 function generateTeamsBySkill(presentIds, overrideMap) {
-  const players = presentIds.map(playerById).filter(Boolean);
-  const posOf = p => effectivePosition(p, overrideMap);
-
-  const tws = sortByStrengthDesc(players.filter(p => posOf(p) === 'TW'));
-  let outfield = players.filter(p => posOf(p) !== 'TW');
-  const perTeam = Math.floor(outfield.length / 2);
-  const shape = computeFormationShape(perTeam);
-
-  const strong = [];
-  const weak = [];
-
-  if (tws.length === 1) {
-    strong.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
-  } else if (tws.length >= 2) {
-    strong.push({ id: tws[0].id, name: tws[0].name, pos: 'TW' });
-    weak.push({ id: tws[1].id, name: tws[1].name, pos: 'TW' });
-    outfield = outfield.concat(tws.slice(2));
-  }
-
-  const pools = {
-    DEF: sortByStrengthDesc(outfield.filter(p => GROUP_OF[posOf(p)] === 'DEF')),
-    DM:  sortByStrengthDesc(outfield.filter(p => posOf(p) === 'DM')),
-    MID: sortByStrengthDesc(outfield.filter(p => GROUP_OF[posOf(p)] === 'MID' && posOf(p) !== 'DM')),
-    FWD: sortByStrengthDesc(outfield.filter(p => GROUP_OF[posOf(p)] === 'FWD')),
-  };
-  const targets = { DEF: shape.def, DM: shape.dm, MID: shape.mid, FWD: shape.fwd };
-  const leftover = [];
-  ['DEF','DM','MID','FWD'].forEach(key => {
-    const target = targets[key];
-    pools[key].forEach((p, i) => {
-      const entry = { id: p.id, name: p.name, pos: posOf(p) };
-      if (i < target) strong.push(entry);
-      else if (i < target * 2) weak.push(entry);
-      else leftover.push(p);
-    });
-  });
-
-  const teams = [strong, weak];
-  const neutral = fillTeamsToSize(teams, sortByStrengthDesc(leftover), perTeam, posOf);
-  return { strong, weak, neutral };
+  const { teams, neutral } = draftTeams(presentIds, 2, 'strength', overrideMap);
+  return { strong: teams[0], weak: teams[1], neutral };
 }
 
-// Teilt anwesende Spieler in "Offensive" (Stürmer, 10er/OM, Flügelspieler LM/RM, ein
-// angriffslastiger 6er) gegen "Defensive" (komplette Abwehr, Torwart, ein
-// defensiverer 6er) auf. Der Rest wird positionsgerecht auf beide Teams verteilt,
-// damit am Ende zwei vollständige, spielbare Mannschaften entstehen.
-// "Gute" Spieler werden für diesen Modus anhand der Beteiligung der letzten 5 Trainings
-// bestimmt (nicht der Saisonquote), da das die aktuelle Form besser abbildet.
+// "Gute" Spieler für Offensive/Defensive: Beteiligung der letzten 5 Trainings.
 function last5Quote(playerId) {
   const s = playerStats(playerId);
   return s.last5Quote != null ? s.last5Quote : s.quote;
 }
 function sortByLast5Desc(players) {
-  // Deterministisch, aus demselben Grund wie sortByStrengthDesc.
   return players
     .slice()
     .sort((a,b) => last5Quote(b.id) - last5Quote(a.id) || a.name.localeCompare(b.name, 'de'));
 }
 
-// Team Offensive bekommt die BESTEN Angreifer (Stürmer/10er/Flügel) plus einen
-// angriffslastigen 6er - begrenzt auf die Formations-Richtgröße -; die Abwehr dieses
-// Teams wird mit den SCHLECHTEREN Verteidigern aufgefüllt. Team Defensive bekommt
-// spiegelbildlich die beste Abwehr plus einen defensiven 6er, aufgefüllt mit den
-// schlechteren Angreifern. So spielen die guten Offensivspieler gegen die guten
-// Defensivspieler, und keines der Teams wird positionell einseitig.
+// Team A = Offensive: die besten Spieler auf den Angriffsplätzen, schwächere hinten.
+// Team B = Defensive: die besten Spieler auf den Abwehrplätzen, schwächere vorne.
 function generateOffenseDefenseTeams(presentIds, overrideMap) {
-  const players = presentIds.map(playerById).filter(Boolean);
-  const posOf = p => effectivePosition(p, overrideMap);
-  const entry = (p, pos) => ({ id: p.id, name: p.name, pos: pos || posOf(p) });
-
-  const attackPositions = ['ST', 'LF', 'RF', 'OM', 'LM', 'RM'];
-  const defensePositions = ['IV', 'LV', 'RV'];
-
-  const tws = sortByLast5Desc(players.filter(p => posOf(p) === 'TW'));
-  let outfield = players.filter(p => posOf(p) !== 'TW');
-  const perTeam = Math.floor(outfield.length / 2);
-  const shape = computeFormationShape(perTeam);
-  const attackNeed = shape.mid + shape.fwd; // 10er, Flügel und Stürmer zusammen
-  const defNeed = shape.def;
-
-  const usedIds = new Set();
-  const teamOffense = [];
-  const teamDefense = [];
-  const leftover = [];
-
-  if (tws[0]) { teamDefense.push(entry(tws[0], 'TW')); usedIds.add(tws[0].id); }
-  if (tws[1]) { teamOffense.push(entry(tws[1], 'TW')); usedIds.add(tws[1].id); }
-  outfield = outfield.concat(tws.slice(2));
-
-  // Angreifer nach Form sortiert: die besten `attackNeed` zur Offensive (ihre
-  // Spezialität), die nächsten `attackNeed` als Auffüllung zur Defensive, Rest in
-  // den allgemeinen Restpool.
-  const attackers = sortByLast5Desc(outfield.filter(p => !usedIds.has(p.id) && attackPositions.includes(posOf(p))));
-  attackers.forEach((p, i) => {
-    usedIds.add(p.id);
-    const e = entry(p);
-    if (i < attackNeed) teamOffense.push(e);
-    else if (i < attackNeed * 2) teamDefense.push(e);
-    else leftover.push(p);
-  });
-
-  // Verteidiger nach Form sortiert: die besten `defNeed` zur Defensive, die nächsten
-  // `defNeed` als Auffüllung zur Offensive, Rest in den allgemeinen Restpool.
-  const defenders = sortByLast5Desc(outfield.filter(p => !usedIds.has(p.id) && defensePositions.includes(posOf(p))));
-  defenders.forEach((p, i) => {
-    usedIds.add(p.id);
-    const e = entry(p);
-    if (i < defNeed) teamDefense.push(e);
-    else if (i < defNeed * 2) teamOffense.push(e);
-    else leftover.push(p);
-  });
-
-  // Die "6er" (DM) nur, wenn die Formation für die aktuelle Teamgröße überhaupt einen
-  // vorsieht: der beste mit angriffslastiger Sekundärposition zur Offensive, der
-  // beste mit defensiver Sekundärposition zur Defensive.
-  const dms = sortByLast5Desc(outfield.filter(p => !usedIds.has(p.id) && posOf(p) === 'DM'));
-  if (shape.dm > 0) {
-    let attackDM = dms.find(p => p.posSecondary && attackPositions.includes(p.posSecondary));
-    let defenseDM = dms.find(p => p !== attackDM && p.posSecondary && defensePositions.includes(p.posSecondary));
-    if (!attackDM && dms.length) attackDM = dms.find(p => p !== defenseDM);
-    if (!defenseDM && dms.length) defenseDM = dms.find(p => p !== attackDM);
-    if (attackDM) { teamOffense.push(entry(attackDM, 'DM')); usedIds.add(attackDM.id); }
-    if (defenseDM) { teamDefense.push(entry(defenseDM, 'DM')); usedIds.add(defenseDM.id); }
-  }
-  dms.forEach(p => { if (!usedIds.has(p.id)) leftover.push(p); });
-
-  // Rest (ZM, überzählige TW, nicht verwendete Angreifer/Verteidiger/6er) auf das
-  // jeweils kleinere Team verteilen; was am Ende nicht mehr passt, bleibt neutral.
-  outfield.forEach(p => { if (!usedIds.has(p.id) && !leftover.includes(p)) leftover.push(p); });
-
-  const teams = [teamOffense, teamDefense];
-  const neutral = fillTeamsToSize(teams, sortByLast5Desc(leftover), perTeam, posOf);
-  return { offense: teamOffense, defense: teamDefense, neutral };
+  const { teams, neutral } = draftTeams(presentIds, 2, 'offense_defense', overrideMap);
+  return { offense: teams[0], defense: teams[1], neutral };
 }
 
 /* ------------------------- Formation / Startelf --------------------------- */
@@ -1626,37 +1623,41 @@ function viewTeams(trainingId) {
 // falschen Seite stehen, obwohl sich sein Label geändert hat.
 const LR_ORDER = { LV: 0, IV: 1, RV: 2, LM: 0, ZM: 1, OM: 1, RM: 2, LF: 0, ST: 1, RF: 2, DM: 1, TW: 1 };
 
-function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle) {
+function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle, extraNeutral) {
   const lines = { FWD: [], MID: [], DM: [], DEF: [], TW: [] };
-  team.forEach(pl => {
-    if (pl.pos === 'DM') lines.DM.push(pl);
-    else lines[GROUP_OF[pl.pos] || 'MID'].push(pl);
+  const all = team.map(pl => ({ pl, grp: teamIdx, neutral: !!neutralStyle }))
+    .concat((extraNeutral || []).map(pl => ({ pl, grp: 'neutral', neutral: true })));
+  all.forEach(e => {
+    const pl = e.pl;
+    if (pl.pos === 'DM') lines.DM.push(e);
+    else lines[GROUP_OF[pl.pos] || 'MID'].push(e);
   });
   const rows = [
-    { key: 'FWD', y: 13 },
-    { key: 'MID', y: 39 },
-    { key: 'DM',  y: 58 },
-    { key: 'DEF', y: 79 },
-    { key: 'TW',  y: 94 },
+    { key: 'FWD', y: 11 },
+    { key: 'MID', y: 34 },
+    { key: 'DM',  y: 53 },
+    { key: 'DEF', y: 72 },
+    { key: 'TW',  y: 90 },
   ];
   let slots = '';
   rows.forEach(row => {
-    const players = lines[row.key].slice().sort((a, b) => {
-      const oa = LR_ORDER[a.pos] != null ? LR_ORDER[a.pos] : 1;
-      const ob = LR_ORDER[b.pos] != null ? LR_ORDER[b.pos] : 1;
+    const entries = lines[row.key].slice().sort((a, b) => {
+      const oa = LR_ORDER[a.pl.pos] != null ? LR_ORDER[a.pl.pos] : 1;
+      const ob = LR_ORDER[b.pl.pos] != null ? LR_ORDER[b.pl.pos] : 1;
       return oa - ob;
     });
-    const n = players.length;
+    const n = entries.length;
     if (!n) return;
-    players.forEach((pl, i) => {
+    entries.forEach((e, i) => {
+      const pl = e.pl;
       const x = ((i + 1) / (n + 1)) * 100;
-      const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === teamIdx && sel.playerId === pl.id;
+      const isSelected = sel && sel.trainingId === trainingId && sel.teamIdx === e.grp && sel.playerId === pl.id;
       // Ein Tipp: Spieler zum Tauschen auswählen (mit Team oder Position, je nach
       // zweitem Ziel). Zwei Tipps auf denselben Spieler: direkte Positionsauswahl.
       // Der ganze Chip ist EIN Tippbereich, damit auf dem Handy nichts knapp daneben geht.
-      slots += `<div class="mini-slot ${isSelected ? 'is-selected' : ''} ${neutralStyle ? 'mini-slot-neutral' : ''} ${flashClass('slot:' + pl.id)}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
-        data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${teamIdx}">
-        <span class="mini-slot-pos">${pl.pos}</span>
+      slots += `<div class="mini-slot ${isSelected ? 'is-selected' : ''} ${e.neutral ? 'mini-slot-neutral' : ''} ${flashClass('slot:' + pl.id)}" style="left:${x.toFixed(1)}%; top:${row.y}%;"
+        data-action="teamPlayerClick" data-id="${trainingId}" data-player="${pl.id}" data-team-idx="${e.grp}">
+        <span class="mini-slot-pos">${e.neutral ? 'N · ' : ''}${pl.pos}</span>
         <span class="mini-slot-name">${esc(pl.name)}</span>
       </div>`;
     });
@@ -1668,25 +1669,21 @@ function renderTeamsResult(teams, trainingId, labels, neutral) {
   const letters = ['A','B','C'];
   const colorClass = ['team-A','team-B','team-C'];
   const sel = state.teamSwapSelection;
+  const hasNeutral = neutral && neutral.length;
   let html = '<div class="mini-pitch-wrap">';
   teams.forEach((team, i) => {
     const title = labels && labels[i] ? `Team ${letters[i]} · ${labels[i]}` : `Team ${letters[i]}`;
+    // Der neutrale Spieler wird im ersten Feld (orange) mit angezeigt, nicht in einem eigenen Feld
+    const extra = hasNeutral && i === 0 ? neutral : null;
     html += `
     <div class="mini-pitch-block">
-      <div class="mini-pitch-header ${colorClass[i]}">${title} <span class="team-count">${team.length}</span></div>
-      ${renderMiniPitch(team, trainingId, i, sel, false)}
+      <div class="mini-pitch-header ${colorClass[i]}">${title} <span class="team-count">${team.length}${extra ? ' + ' + extra.length + ' neutral' : ''}</span></div>
+      ${renderMiniPitch(team, trainingId, i, sel, false, extra)}
     </div>`;
   });
-  if (neutral && neutral.length) {
-    html += `
-    <div class="mini-pitch-block">
-      <div class="mini-pitch-header neutral-header">Neutral <span class="team-count">${neutral.length}</span></div>
-      ${renderMiniPitch(neutral, trainingId, 'neutral', sel, true)}
-    </div>`;
-  }
   html += '</div>';
-  if (neutral && neutral.length) {
-    html += `<p class="muted small-note">Neutral spielt bei der Mannschaft mit, die gerade den Ball hat – lässt sich genauso wie die anderen antippen und tauschen.</p>`;
+  if (hasNeutral) {
+    html += `<p class="muted small-note"><span class="neutral-dot"></span> Orange = neutral (${neutral.map(p => esc(p.name)).join(', ')}): spielt bei der Mannschaft mit, die gerade den Ball hat. Lässt sich wie alle anderen antippen und mit jedem Spieler tauschen.</p>`;
   }
   html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen, um zu tauschen (nochmal denselben antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen zweiten – sie tauschen ihren Platz (auch links ↔ rechts oder zwischen den Teams). Doppelt antippen: Position direkt wählen.'}</p>`;
   return html;
@@ -2963,9 +2960,14 @@ function handleAction(btn, e) {
       return;
     }
 
-    const tmp = teamA[idxA];
-    teamA[idxA] = teamB[idxB];
-    teamB[idxB] = tmp;
+    // Zwischen Teams (oder mit dem neutralen Spieler): jeder übernimmt den Platz
+    // des anderen, damit beide Aufstellungen vollständig bleiben.
+    const pa = teamA[idxA], pb = teamB[idxB];
+    const posA = pa.pos;
+    pa.pos = pb.pos;
+    pb.pos = posA;
+    teamA[idxA] = pb;
+    teamB[idxB] = pa;
     state.flashKeys = ['slot:' + sel.playerId, 'slot:' + playerId];
     saveDB();
     render();
