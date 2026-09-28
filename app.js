@@ -1673,8 +1673,8 @@ function renderTeamsResult(teams, trainingId, labels, neutral) {
   let html = '<div class="mini-pitch-wrap">';
   teams.forEach((team, i) => {
     const title = labels && labels[i] ? `Team ${letters[i]} · ${labels[i]}` : `Team ${letters[i]}`;
-    // Der neutrale Spieler wird im ersten Feld (orange) mit angezeigt, nicht in einem eigenen Feld
-    const extra = hasNeutral && i === 0 ? neutral : null;
+    // Der neutrale Spieler wird immer bei Team B (schwächer bzw. defensiv) mit angezeigt
+    const extra = hasNeutral && i === Math.min(1, teams.length - 1) ? neutral : null;
     html += `
     <div class="mini-pitch-block">
       <div class="mini-pitch-header ${colorClass[i]}">${title} <span class="team-count">${team.length}${extra ? ' + ' + extra.length + ' neutral' : ''}</span></div>
