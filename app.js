@@ -8,6 +8,10 @@
 /* ---------------------------- Konstanten ------------------------------- */
 
 const DB_KEY = 'svmU19TrainerDB';
+// Bereiche vorübergehend ausblenden (Daten und Code bleiben erhalten).
+// Zum Wiedereinblenden einfach auf true setzen.
+const FEATURES = { notes: false, exercises: false };
+
 const DB_VERSION = 8;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
@@ -706,13 +710,11 @@ function computeHints() {
     } else if (unentsch5 === 1) {
       yellow.push({ text: `${p.name} – 1x unentschuldigt in den letzten ${last5.length} Trainings`, weight: 35 });
     }
-    if (s.total >= 3 && s.quote < 60) {
-      red.push({ text: `${p.name} – Trainingsbeteiligung unter 60 % (${s.quote} %)`, weight: 90 });
-    } else if (s.total >= 3 && s.quote < 75) {
-      yellow.push({ text: `${p.name} – Trainingsbeteiligung im unteren Mittelfeld (${s.quote} %)`, weight: 40 });
-    }
-    if (s.last5Quote != null && s.total >= 5 && s.last5Quote < s.quote - 15) {
-      yellow.push({ text: `${p.name} – Trainingsbeteiligung zuletzt deutlich gesunken`, weight: 60 });
+    // Prozent-Warnungen erst unter 30 %
+    if (s.total >= 3 && s.quote < 30) {
+      red.push({ text: `${p.name} – Trainingsbeteiligung unter 30 % (${s.quote} %)`, weight: 90 });
+    } else if (s.last5Quote != null && s.total >= 5 && s.last5Quote < 30 && s.last5Quote < s.quote - 15) {
+      yellow.push({ text: `${p.name} – zuletzt unter 30 % Beteiligung (letzte 5: ${s.last5Quote} %)`, weight: 60 });
     }
   });
 
@@ -1292,7 +1294,7 @@ function tabbar() {
     <button data-tab="trainingList" data-nav="trainingList"><span>📋</span>Training</button>
     <button data-tab="teams" data-nav="teams"><span>⚽</span>Teams</button>
     <button data-tab="matchList" data-nav="matchList"><span>🏟️</span>Spieltag</button>
-    <button data-tab="exercises" data-nav="exercises"><span>📚</span>Übungen</button>
+    ${FEATURES.exercises ? `<button data-tab="exercises" data-nav="exercises"><span>📚</span>Übungen</button>` : ''}
   </nav>`;
 }
 
@@ -1336,11 +1338,14 @@ function viewDashboard() {
     <div class="grid2">
       <div class="stat-card"><div class="stat-num">${activePlayers().length}</div><div class="stat-label">Spieler</div></div>
       <div class="stat-card"><div class="stat-num">${DB.trainings.filter(isTrainingComplete).length}</div><div class="stat-label">Trainings erfasst</div></div>
-      <div class="stat-card"><div class="stat-num">${openImportant}</div><div class="stat-label">Wichtige Notizen offen</div></div>
-      <div class="stat-card"><div class="stat-num">${tq != null ? tq + ' %' : '–'}</div><div class="stat-label">Ø Trainingsbeteiligung</div></div>
+      <div class="stat-card stat-card--wide">
+        <div class="stat-num">${tq != null ? tq + ' %' : '–'}</div>
+        <div class="stat-label">Ø Trainingsbeteiligung</div>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${tq != null ? tq : 0}%"></div></div>
+      </div>
     </div>
 
-    ${focus ? `<div class="callout callout--blue">
+    ${FEATURES.notes && focus ? `<div class="callout callout--blue">
       <div class="callout-title">Empfohlener Trainingsschwerpunkt</div>
       <div class="callout-body">${esc(focus)}</div>
     </div>` : ''}
@@ -1413,10 +1418,10 @@ function renderDashboardSidebar() {
     { nav: 'teams', icon: '⚽', label: 'Teams erstellen' },
     { nav: 'matchList', icon: '🏟️', label: 'Spieltag' },
     { nav: 'players', icon: '👥', label: 'Spieler' },
-    { nav: 'notes', icon: '📝', label: 'Notizen' },
-    { nav: 'exercises', icon: '📚', label: 'Übungen' },
+    { nav: 'notes', icon: '📝', label: 'Notizen', feature: 'notes' },
+    { nav: 'exercises', icon: '📚', label: 'Übungen', feature: 'exercises' },
     { nav: 'backup', icon: '💾', label: 'Backup' },
-  ];
+  ].filter(it => !it.feature || FEATURES[it.feature]);
   return `
   <div class="sidebar-overlay show" data-action="closeSidebar"></div>
   <nav class="sidebar-panel show">
@@ -1491,14 +1496,17 @@ function viewTrainingDetail(id) {
   </header>
   <main class="content">
     ${!isTrainingComplete(t) ? `<p class="muted small-note">Zählt erst in der Trainingsbeteiligung, sobald jeder Spieler einen Status außer „Offen" hat (noch ${Object.values(t.attendance).filter(s=>s==='offen').length} offen).</p>` : ''}
-    <div class="row-actions">
-      <button class="btn btn-ghost" data-action="allAttendance" data-id="${t.id}" data-status="anwesend">Alle anwesend</button>
-      <button class="btn btn-ghost" data-action="allAttendance" data-id="${t.id}" data-status="offen">Alle offen</button>
-    </div>
     <div class="attend-list">
-      ${players.map(p => {
+      ${players.slice().sort((a,b) => {
+        // Offene Rückmeldungen nach oben, erfasste rutschen nach unten
+        const oa = (t.attendance[a.id] || 'offen') === 'offen' ? 0 : 1;
+        const ob = (t.attendance[b.id] || 'offen') === 'offen' ? 0 : 1;
+        return oa - ob || a.name.localeCompare(b.name, 'de');
+      }).map((p, idx, arr) => {
         const s = t.attendance[p.id] || 'offen';
-        return `
+        const prev = idx > 0 ? (t.attendance[arr[idx-1].id] || 'offen') : null;
+        const divider = idx > 0 && prev === 'offen' && s !== 'offen' ? '<div class="list-divider">Bereits erfasst</div>' : '';
+        return `${divider}
         <div class="attend-row">
           <div class="attend-name">${esc(p.name)}</div>
           <div class="attend-btns">
@@ -1512,6 +1520,15 @@ function viewTrainingDetail(id) {
     </div>
     <button class="btn btn-block" data-nav="teams" data-params='{"id":"${t.id}"}'>⚽ Teams aus diesem Training erstellen</button>
 
+    ${FEATURES.exercises ? renderSessionPlan(t) : ''}
+
+    <button class="btn btn-danger btn-block" data-action="deleteTraining" data-id="${t.id}">Training löschen</button>
+  </main>
+  ${tabbar()}`;
+}
+
+function renderSessionPlan(t) {
+  return `
     <div class="section-head"><span>Sitzungsplan${t.sessionPlan && t.sessionPlan.length ? ` · ${t.sessionPlan.reduce((a,i)=>a+i.duration,0)} Min.` : ''}</span></div>
     <div class="list">
       ${!t.sessionPlan || t.sessionPlan.length === 0 ? emptyState('🗒️', 'Noch kein Plan für dieses Training. Füge unten Übungen aus der Bibliothek oder eigene Blöcke hinzu.') : t.sessionPlan.map((item, idx) => `
@@ -1533,9 +1550,7 @@ function viewTrainingDetail(id) {
     </div>
     ${t.sessionPlan && t.sessionPlan.length ? `<button class="btn btn-block" data-action="copySessionPlanWhatsApp" data-id="${t.id}">📋 Für WhatsApp kopieren</button>` : ''}
 
-    <button class="btn btn-danger btn-block" data-action="deleteTraining" data-id="${t.id}">Training löschen</button>
-  </main>
-  ${tabbar()}`;
+`;
 }
 
 /* --------------------------------- Teams ------------------------------------ */
@@ -1576,6 +1591,8 @@ function viewTeams(trainingId) {
       </div>
     </div>
 
+    ${teamsHtml}
+
     ${t.teamGen.numTeams === 2 ? `
     <div class="select-row">
       <label>Verteilung</label>
@@ -1601,7 +1618,7 @@ function viewTeams(trainingId) {
           </div>
         </div>`;
       }).join('')}
-      ${t.teamGen.teams ? `<p class="muted small-note">Änderung übernommen? Unten auf „Teams anpassen" tippen.</p>` : ''}
+      ${t.teamGen.teams ? `<p class="muted small-note">Änderung übernommen? Darunter auf „Teams anpassen" tippen.</p>` : ''}
     </details>` : ''}
 
     <button class="btn btn-primary btn-block" data-action="drawTeams" data-id="${t.id}" ${presentPlayers.length===0?'disabled':''}>${
@@ -1611,9 +1628,6 @@ function viewTeams(trainingId) {
     }</button>
     ${t.teamGen.teams ? `<button class="btn btn-block" data-action="copyTeamsWhatsApp" data-id="${t.id}">📋 Für WhatsApp kopieren</button>` : ''}
 
-    ${teamsHtml}
-
-    ${t.teamGen.teams && t.teamGen.numTeams === 3 ? renderRotation() : ''}
   </main>
   ${tabbar()}`;
 }
@@ -1662,7 +1676,9 @@ function renderMiniPitch(team, trainingId, teamIdx, sel, neutralStyle, extraNeut
       </div>`;
     });
   });
-  return `<div class="mini-pitch ${neutralStyle ? 'mini-pitch-neutral' : ''}">${slots}</div>`;
+  // Auf freie Rasenfläche tippen = ausgewählten Spieler in dieses Team verschieben
+  const movable = sel && sel.trainingId === trainingId && sel.teamIdx !== teamIdx;
+  return `<div class="mini-pitch ${neutralStyle ? 'mini-pitch-neutral' : ''} ${movable ? 'mini-pitch-target' : ''}" data-action="teamMoveHere" data-id="${trainingId}" data-team-idx="${teamIdx}">${slots}</div>`;
 }
 
 function renderTeamsResult(teams, trainingId, labels, neutral) {
@@ -1682,10 +1698,25 @@ function renderTeamsResult(teams, trainingId, labels, neutral) {
     </div>`;
   });
   html += '</div>';
+  // Ausgewählter Spieler: Knöpfe zum Verschieben in ein anderes Team (ohne Tausch)
+  if (sel && sel.trainingId === trainingId) {
+    const all = teams.map((t, i) => ({ arr: t, idx: i })).concat([{ arr: neutral || [], idx: 'neutral' }]);
+    const src = all.find(g => g.idx === sel.teamIdx);
+    const pl = src && src.arr.find(x => x.id === sel.playerId);
+    if (pl) {
+      const targets = teams.map((t, i) => i).filter(i => i !== sel.teamIdx)
+        .map(i => `<button class="btn btn-primary btn-small" data-action="teamMoveHere" data-id="${trainingId}" data-team-idx="${i}">→ Team ${letters[i]}</button>`);
+      if (sel.teamIdx !== 'neutral') targets.push(`<button class="btn btn-small move-neutral-btn" data-action="teamMoveHere" data-id="${trainingId}" data-team-idx="neutral">→ Neutral</button>`);
+      html += `<div class="move-bar">
+        <div class="move-bar-text"><strong>${esc(pl.name)}</strong> (${pl.pos}) ausgewählt – tauschen oder verschieben:</div>
+        <div class="move-bar-btns">${targets.join('')}</div>
+      </div>`;
+    }
+  }
   if (hasNeutral) {
     html += `<p class="muted small-note"><span class="neutral-dot"></span> Orange = neutral (${neutral.map(p => esc(p.name)).join(', ')}): spielt bei der Mannschaft mit, die gerade den Ball hat. Lässt sich wie alle anderen antippen und mit jedem Spieler tauschen.</p>`;
   }
-  html += `<p class="muted team-hint">${sel ? 'Jetzt einen zweiten Spieler antippen, um zu tauschen (nochmal denselben antippen zum Abbrechen).' : 'Tipp: Spieler antippen, dann einen zweiten – sie tauschen ihren Platz (auch links ↔ rechts oder zwischen den Teams). Doppelt antippen: Position direkt wählen.'}</p>`;
+  html += `<p class="muted team-hint">${sel ? 'Zweiten Spieler antippen = tauschen. Freien Rasen im anderen Team antippen = verschieben. Nochmal denselben antippen = abbrechen.' : 'Tipp: Spieler antippen, dann einen zweiten – sie tauschen ihren Platz. Zum Verschieben ohne Tausch: Spieler antippen, dann auf freien Rasen im anderen Team tippen. Doppelt antippen: Position direkt wählen.'}</p>`;
   return html;
 }
 
@@ -1920,13 +1951,14 @@ function viewPlayerProfile(id) {
       <button class="btn btn-block" type="submit">Speichern</button>
     </form>
 
+    ${FEATURES.notes ? `
     <div class="section-head">
       <span>Notizen</span>
       <button class="btn btn-small" data-nav="noteForm" data-params='{"playerId":"${p.id}"}'>+ Notiz</button>
     </div>
     <div class="list">
       ${notes.length === 0 ? emptyState('📝', 'Noch keine Notizen zu diesem Spieler.', `<button class="btn btn-primary" data-nav="noteForm" data-params='{"playerId":"${p.id}"}'>Erste Notiz anlegen</button>`) : notes.map(n => noteCard(n)).join('')}
-    </div>
+    </div>` : ''}
   </main>
   ${tabbar()}`;
 }
@@ -2112,10 +2144,6 @@ function viewMatchDetail(id) {
   if (tab === 'zusagen') {
     body = `
     <div class="summary-line">${zugesagtCount} zugesagt · ${offenCount} offen</div>
-    <div class="row-actions">
-      <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="zugesagt">Alle zugesagt</button>
-      <button class="btn btn-ghost" data-action="allMatchAvailability" data-id="${m.id}" data-status="offen">Alle offen</button>
-    </div>
     <div class="attend-list">
       ${activePlayers().slice().sort((a,b) => {
         // Offene Rückmeldungen nach oben, damit nicht gescrollt werden muss
@@ -2913,6 +2941,24 @@ function handleAction(btn, e) {
       t.teamGen.neutral.forEach(pl => text += `- ${pl.name}\n`);
     }
     copyToClipboard(text.trim());
+  }
+  else if (action === 'teamMoveHere') {
+    const sel = state.teamSwapSelection;
+    const raw = btn.dataset.teamIdx;
+    const target = raw === 'neutral' ? 'neutral' : parseInt(raw, 10);
+    if (!sel || sel.trainingId !== id) return;
+    if (sel.teamIdx === target) { state.teamSwapSelection = null; render(); return; }
+    const t = DB.trainings.find(x => x.id === id);
+    const groupFor = idx => idx === 'neutral' ? (t.teamGen.neutral || (t.teamGen.neutral = [])) : t.teamGen.teams[idx];
+    const from = groupFor(sel.teamIdx), to = groupFor(target);
+    const i = from.findIndex(p => p.id === sel.playerId);
+    state.teamSwapSelection = null;
+    if (i === -1) { render(); return; }
+    const [pl] = from.splice(i, 1);
+    to.push(pl);
+    state.flashKeys = ['slot:' + pl.id];
+    saveDB();
+    render();
   }
   else if (action === 'teamPlayerClick') {
     const trainingId = id;

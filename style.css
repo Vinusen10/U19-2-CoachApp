@@ -618,3 +618,18 @@ input, select, textarea { color: var(--text); }
   margin: 10px 2px 2px; padding-top: 8px; border-top: 1px solid var(--border);
 }
 .neutral-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #e8913a; vertical-align: middle; margin-right: 2px; }
+
+/* ---------- v31: breite Statistik, Spieler verschieben ---------- */
+.stat-card--wide { grid-column: 1 / -1; }
+.stat-bar { height: 10px; background: var(--blue-light); border-radius: 999px; margin-top: 10px; overflow: hidden; }
+.stat-bar-fill { height: 100%; background: var(--blue); border-radius: 999px; transition: width .3s; }
+.move-bar {
+  position: sticky; bottom: calc(70px + env(safe-area-inset-bottom)); z-index: 20;
+  background: var(--card); border: 2px solid var(--blue); border-radius: var(--radius);
+  padding: 10px 12px; margin: 12px 0; box-shadow: 0 4px 14px rgba(0,0,0,.15);
+}
+.move-bar-text { font-size: var(--fs-sm); font-weight: 700; margin-bottom: 8px; }
+.move-bar-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.move-bar-btns .btn { flex: 1 1 auto; }
+.move-neutral-btn { background: #f97316 !important; border-color: #f97316 !important; color: #fff !important; }
+.mini-pitch-target { outline: 3px dashed #facc15; outline-offset: 2px; cursor: pointer; }
