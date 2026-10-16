@@ -12,7 +12,7 @@ const DB_KEY = 'svmU19TrainerDB';
 // Zum Wiedereinblenden einfach auf true setzen.
 const FEATURES = { notes: false, exercises: false };
 
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 const POSITIONS = ['TW','IV','LV','RV','DM','ZM','OM','LM','RM','LF','RF','ST'];
 const GROUP_OF = { TW:'TW', IV:'DEF', LV:'DEF', RV:'DEF', DM:'MID', ZM:'MID', OM:'MID', LM:'MID', RM:'MID', LF:'FWD', RF:'FWD', ST:'FWD' };
@@ -304,7 +304,8 @@ function migrate(db) {
     return m;
   });
   db.exercises = db.exercises || [];
-  db.trainings.forEach(t => { t.sessionPlan = t.sessionPlan || []; });
+  db.trainings.forEach(t => { t.sessionPlan = t.sessionPlan || []; t.ratings = t.ratings || {}; });
+  db.matches.forEach(m => { m.ratings = m.ratings || {}; });
   if (!('lastBackupAt' in db.settings)) db.settings.lastBackupAt = null;
   // Beispielübungen einmalig nachrüsten, falls noch keine eigenen angelegt wurden
   // (nur beim allerersten Mal, damit absichtlich gelöschte Beispiele nicht zurückkehren).
@@ -686,6 +687,198 @@ function matchStats(playerId) {
   return { imKader, startelf, bank: imKader - startelf, nichtImKader };
 }
 
+/* ------------------------------ Bewertungen ------------------------------ */
+// Bewertung 1–5 Sterne (5 = sehr stark). Gespeichert in training.ratings / match.ratings.
+const RATING_LABELS = { 1: 'Schwach', 2: 'Unter Schnitt', 3: 'Okay', 4: 'Gut', 5: 'Sehr stark' };
+
+function playerRatings(playerId) {
+  const out = [];
+  DB.trainings.forEach(t => {
+    const v = (t.ratings || {})[playerId];
+    if (v && (t.attendance || {})[playerId] === 'anwesend') out.push({ date: t.date, value: v, kind: 'T', id: t.id });
+  });
+  DB.matches.forEach(m => {
+    const v = (m.ratings || {})[playerId];
+    if (v) out.push({ date: m.date, value: v, kind: 'S', id: m.id });
+  });
+  return out.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.kind === 'T' ? -1 : 1));
+}
+
+// Gewichteter Schnitt: neuere Bewertungen zählen mehr, Spiele 1,5-fach.
+function ratingAvg(list) {
+  if (!list.length) return null;
+  let sum = 0, w = 0;
+  list.forEach((r, i) => {
+    const wt = (1 + i / list.length) * (r.kind === 'S' ? 1.5 : 1);
+    sum += r.value * wt; w += wt;
+  });
+  return sum / w;
+}
+function ratingForm(playerId, n) {
+  const list = playerRatings(playerId).slice(-(n || 10));
+  return { avg: ratingAvg(list), count: list.length, list };
+}
+// Wenige Bewertungen werden zur Mitte (3 Sterne) gezogen, damit eine einzelne
+// 5-Sterne-Bewertung nicht sofort ganz nach oben katapultiert.
+function ratingScore100(playerId) {
+  const f = ratingForm(playerId, 10);
+  if (f.avg == null) return null;
+  const adj = (f.avg * f.count + 3) / (f.count + 1);
+  return (adj - 1) / 4 * 100;
+}
+function isoDaysAgo(days) {
+  const d = new Date(Date.now() - days * 864e5);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// Form der letzten Wochen: Bewertungen der letzten 5 Wochen, sonst die letzten 3.
+function recentForm(playerId) {
+  const all = playerRatings(playerId);
+  if (!all.length) return null;
+  const cutoff = isoDaysAgo(35);
+  let list = all.filter(r => r.date >= cutoff);
+  if (!list.length) list = all.slice(-3);
+  return ratingAvg(list);
+}
+function fmtRating(v) { return v == null ? '–' : v.toFixed(1).replace('.', ','); }
+function formBadge(playerId) {
+  const f = recentForm(playerId);
+  if (f == null) return '';
+  const cls = f >= 3.75 ? 'form-good' : f >= 2.75 ? 'form-ok' : 'form-bad';
+  return `<span class="form-badge ${cls}" title="Form der letzten Wochen">★${fmtRating(f)}</span>`;
+}
+function starInput(kind, ownerId, playerId, value) {
+  let html = '<div class="stars">';
+  for (let i = 1; i <= 5; i++) {
+    html += `<button class="star ${value && i <= value ? 'on' : ''}" data-action="setRating" data-kind="${kind}" data-id="${ownerId}" data-player="${playerId}" data-value="${i}" aria-label="${i} Sterne">★</button>`;
+  }
+  return html + '</div>';
+}
+function ratingRowsHTML(kind, owner, players, subLabelFn) {
+  const ratings = owner.ratings || {};
+  const sorted = players.slice().sort((a, b) => {
+    const ra = ratings[a.id] ? 1 : 0, rb = ratings[b.id] ? 1 : 0;
+    return ra - rb;
+  });
+  return sorted.map((p, idx, arr) => {
+    const v = ratings[p.id];
+    const prevRated = idx > 0 && !!ratings[arr[idx - 1].id];
+    const divider = idx > 0 && !prevRated && v ? '<div class="list-divider">Bereits bewertet</div>' : '';
+    const sub = subLabelFn ? subLabelFn(p) : '';
+    return `${divider}<div class="attend-row ${flashClass('rate:' + p.id)}">
+      <div class="attend-name rating-head"><span>${sub ? `<span class="rec-pos">${sub}</span>` : ''}${esc(p.name)}</span><span class="rating-label">${v ? RATING_LABELS[v] : 'nicht bewertet'}</span></div>
+      ${starInput(kind, owner.id, p.id, v)}
+    </div>`;
+  }).join('');
+}
+
+// Empfehlungs-Score 0–100: Bewertung 60 % + Trainingsbeteiligung 40 %.
+// Ohne Bewertung zählt der Spieler als 3 Sterne (neutral).
+function recommendationScore(playerId) {
+  const r = ratingScore100(playerId);
+  const ratingPart = r != null ? r : 50;
+  const s = playerStats(playerId);
+  let quotePart = 50;
+  if (s.total > 0) quotePart = (s.total >= 5 && s.last5Quote != null) ? (s.quote + s.last5Quote) / 2 : s.quote;
+  return ratingPart * 0.6 + quotePart * 0.4;
+}
+function fitFactor(sc) { return sc >= 3 ? 1 : sc >= 2 ? 0.85 : sc >= 1.5 ? 0.7 : sc >= 1 ? 0.6 : 0; }
+
+function recommendedLineup(formationKey) {
+  const formation = FORMATIONS[formationKey];
+  const pool = activePlayers().map(p => ({ p, score: recommendationScore(p.id) }));
+  const val = (slot, x) => fitFactor(slotScore(slot, x.p)) * (40 + x.score);
+  const assign = {}; // slotKey -> entry
+  const used = new Set();
+  const open = formation.slots.slice();
+  // Gierig: immer das beste Paar (Position, Spieler) zuerst besetzen
+  while (open.length) {
+    let best = null;
+    open.forEach(slot => pool.forEach(x => {
+      if (used.has(x.p.id)) return;
+      const v = val(slot, x);
+      if (v > 0 && (!best || v > best.v || (v === best.v && x.p.name < best.x.p.name))) best = { slot, x, v };
+    }));
+    if (!best) break;
+    assign[best.slot.key] = best.x; used.add(best.x.p.id);
+    open.splice(open.indexOf(best.slot), 1);
+  }
+  // Positionen ohne passenden Spieler: bester übriger Spieler (fachfremd)
+  open.forEach(slot => {
+    const x = pool.filter(y => !used.has(y.p.id)).sort((a, b) => b.score - a.score)[0];
+    if (x) { assign[slot.key] = x; used.add(x.p.id); }
+  });
+  // Nachbessern: Tausch innerhalb der Elf und mit Ersatzspielern, solange es besser wird
+  const total = () => formation.slots.reduce((a, sl) => a + (assign[sl.key] ? val(sl, assign[sl.key]) : 0), 0);
+  for (let iter = 0; iter < 30; iter++) {
+    let improved = false;
+    const slots = formation.slots.filter(sl => assign[sl.key]);
+    for (let i = 0; i < slots.length && !improved; i++) {
+      for (let j = i + 1; j < slots.length && !improved; j++) {
+        const a = slots[i], b = slots[j];
+        const before = val(a, assign[a.key]) + val(b, assign[b.key]);
+        const after = val(a, assign[b.key]) + val(b, assign[a.key]);
+        if (after > before + 0.01) { const t = assign[a.key]; assign[a.key] = assign[b.key]; assign[b.key] = t; improved = true; }
+      }
+      if (improved) break;
+      const sl = slots[i];
+      pool.forEach(x => {
+        if (improved || used.has(x.p.id)) return;
+        if (val(sl, x) > val(sl, assign[sl.key]) + 0.01) {
+          used.delete(assign[sl.key].p.id); assign[sl.key] = x; used.add(x.p.id); improved = true;
+        }
+      });
+    }
+    if (!improved) break;
+  }
+  // 5 Auswechselspieler: Ersatz-TW (falls vorhanden), je ein Abwehr-, Mittelfeld-, Angriffsspieler, Rest nach Score
+  const rest = pool.filter(x => !used.has(x.p.id)).sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name, 'de'));
+  const bench = [];
+  const take = x => { if (x && !bench.includes(x) && bench.length < 5) bench.push(x); };
+  const inGroup = (x, g) => GROUP_OF[x.p.posPrimary] === g || (x.p.posSecondary && GROUP_OF[x.p.posSecondary] === g);
+  take(rest.find(x => x.p.posPrimary === 'TW'));
+  ['DEF', 'MID', 'FWD'].forEach(g => take(rest.find(x => !bench.includes(x) && x.p.posPrimary !== 'TW' && inGroup(x, g))));
+  rest.forEach(x => { if (x.p.posPrimary !== 'TW' || !bench.some(b => b.p.posPrimary === 'TW')) take(x); });
+  bench.sort((a, b) => GROUP_ORDER.indexOf(GROUP_OF[a.p.posPrimary]) - GROUP_ORDER.indexOf(GROUP_OF[b.p.posPrimary]));
+  const others = pool.filter(x => !used.has(x.p.id) && !bench.includes(x)).sort((a, b) => b.score - a.score);
+  return { formation, assign, bench, others, fachfremd: key => assign[key] && slotScore(formation.slots.find(s => s.key === key), assign[key].p) === 0 };
+}
+function defaultRecFormation() {
+  if (DB.settings.recFormation && FORMATIONS[DB.settings.recFormation]) return DB.settings.recFormation;
+  const last = DB.matches.slice().sort((a, b) => b.date < a.date ? -1 : 1)[0];
+  return last && FORMATIONS[last.formation] ? last.formation : FORMATION_NAMES[0];
+}
+function lastRatingDate() {
+  let d = null;
+  DB.trainings.forEach(t => { if (t.ratings && Object.keys(t.ratings).length && (!d || t.date > d)) d = t.date; });
+  DB.matches.forEach(m => { if (m.ratings && Object.keys(m.ratings).length && (!d || m.date > d)) d = m.date; });
+  return d;
+}
+
+// Verlauf der letzten 10 Bewertungen als Kurve (blau = Training, orange = Spiel).
+function ratingHistorySVG(list, width, height) {
+  width = width || 300; height = height || 120;
+  const pts = list.slice(-10);
+  if (!pts.length) return '';
+  const padL = 20, padR = 10, padT = 10, padB = 10;
+  const n = pts.length;
+  const xAt = i => n === 1 ? (padL + (width - padL - padR) / 2) : padL + i * (width - padL - padR) / (n - 1);
+  const yAt = v => padT + (5 - v) * (height - padT - padB) / 4;
+  let grid = '';
+  for (let v = 1; v <= 5; v++) {
+    grid += `<line x1="${padL}" y1="${yAt(v)}" x2="${width - padR}" y2="${yAt(v)}" stroke="#e2e8f5" stroke-width="1"/>`;
+    grid += `<text x="4" y="${yAt(v) + 4}" font-size="10" fill="#64748b">${v}</text>`;
+  }
+  const line = pts.map((r, i) => `${xAt(i).toFixed(1)},${yAt(r.value).toFixed(1)}`).join(' ');
+  const dots = pts.map((r, i) => `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(r.value).toFixed(1)}" r="5.5" fill="${r.kind === 'S' ? '#f97316' : '#0a2f70'}" stroke="#fff" stroke-width="1.5"/>`).join('');
+  return `
+  <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+    ${grid}
+    ${n > 1 ? `<polyline points="${line}" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linejoin="round"/>` : ''}
+    ${dots}
+  </svg>
+  <div class="chart-axis-labels"><span>${esc(fmtDate(pts[0].date))}</span><span>${esc(fmtDate(pts[n - 1].date))}</span></div>`;
+}
+
 // Erzeugt kategorisierte Hinweise (rot = sehr bedenklich, gelb = weniger bedenklich,
 // grün = besonders gut). Negative Hinweise haben Vorrang, grün ist auf max. 3 begrenzt,
 // insgesamt werden maximal 10 Hinweise zurückgegeben.
@@ -696,6 +889,18 @@ function computeHints() {
   const players = activePlayers();
 
   players.forEach(p => {
+    // Bewertungen: schwache Serie (rot), zwei schwache in Folge (gelb), starke Serie (grün)
+    const rl = playerRatings(p.id);
+    const r3 = rl.slice(-3), r2 = rl.slice(-2);
+    if (r3.length === 3 && r3.every(r => r.value <= 2)) {
+      red.push({ text: `${p.name} – 3× in Folge schwach bewertet`, weight: 92 });
+    } else if (r2.length === 2 && r2.every(r => r.value <= 2)) {
+      yellow.push({ text: `${p.name} – 2× in Folge schwach bewertet`, weight: 55 });
+    }
+    if (r3.length === 3 && r3.every(r => r.value >= 4)) {
+      greenCandidates.push({ text: `${p.name} – 3× in Folge stark bewertet`, weight: 190 + r3.reduce((a, r) => a + r.value, 0) });
+    }
+
     const s = playerStats(p.id);
     if (s.total < 2) return;
 
@@ -989,12 +1194,18 @@ function generateTeams(presentIds, numTeams, overrideMap) {
 
 // Stärke-Score: kombiniert Trainingsbeteiligung (immer vorhanden) mit Spielbeteiligung
 // (Startelf-Quote aus Spieltagen, falls schon Spieltage erfasst sind).
+// Mit Bewertungen: Bewertung 50 %, Trainingsbeteiligung 35 %, Startelf-Quote 15 %.
 function playerStrengthScore(playerId) {
   const trainingsQuote = playerStats(playerId).quote;
   const ms = matchStats(playerId);
-  if (ms.imKader === 0) return trainingsQuote;
-  const spielQuote = Math.round((ms.startelf / ms.imKader) * 100);
-  return Math.round(trainingsQuote * 0.6 + spielQuote * 0.4);
+  const rating = ratingScore100(playerId);
+  const spielQuote = ms.imKader > 0 ? Math.round((ms.startelf / ms.imKader) * 100) : null;
+  if (rating == null) {
+    if (spielQuote == null) return trainingsQuote;
+    return Math.round(trainingsQuote * 0.6 + spielQuote * 0.4);
+  }
+  if (spielQuote == null) return Math.round(rating * 0.55 + trainingsQuote * 0.45);
+  return Math.round(rating * 0.5 + trainingsQuote * 0.35 + spielQuote * 0.15);
 }
 
 function sortByStrengthDesc(players) {
@@ -1149,6 +1360,7 @@ const state = {
   sidebarOpen: false,
   flashKeys: [],
   matchTab: {},
+  trainingTab: {},
 };
 
 function isDetailsOpen(key, defaultOpen) {
@@ -1225,6 +1437,7 @@ function render() {
     case 'generalNoteForm': html = viewGeneralNoteForm(state.params.id); break;
     case 'matchList': html = viewMatchList(); break;
     case 'matchDetail': html = viewMatchDetail(state.params.id); break;
+    case 'recommendedLineup': html = viewRecommendedLineup(); break;
     case 'backup': html = viewBackup(); break;
     case 'exercises': html = viewExercises(); break;
     case 'exerciseForm': html = viewExerciseForm(state.params.id); break;
@@ -1270,7 +1483,7 @@ function topLevel(route) {
   if (['trainingList','trainingDetail'].includes(route)) return 'trainingList';
   if (['exercises','exerciseForm'].includes(route)) return 'exercises';
   if (['teams'].includes(route)) return 'teams';
-  if (['matchList','matchDetail','importFussball'].includes(route)) return 'matchList';
+  if (['matchList','matchDetail','importFussball','recommendedLineup'].includes(route)) return 'matchList';
   if (['players','playerProfile','playerForm'].includes(route)) return 'players';
   if (['notes','noteForm','generalNoteForm'].includes(route)) return 'notes';
   return route;
@@ -1488,13 +1701,19 @@ function viewTrainingDetail(id) {
   const t = DB.trainings.find(x => x.id === id);
   if (!t) return viewTrainingList();
   const players = activePlayers().slice().sort((a,b) => a.name.localeCompare(b.name, 'de'));
-  return `
-  <header class="topbar">
-    <button class="icon-btn" data-back="true">←</button>
-    <h1>${fmtDate(t.date)} <button class="inline-edit-btn" data-action="editTrainingDate" data-id="${t.id}" title="Datum ändern">✎</button></h1>
-    <button class="icon-btn" data-nav="backup">⋮</button>
-  </header>
-  <main class="content">
+  const present = players.filter(p => t.attendance[p.id] === 'anwesend');
+  const ratedCount = present.filter(p => (t.ratings || {})[p.id]).length;
+  const tab = state.trainingTab[t.id] || 'anwesenheit';
+
+  let body = '';
+  if (tab === 'bewertung') {
+    body = present.length === 0
+      ? emptyState('⭐', 'Erst die Anwesenheit erfassen – bewertet werden nur anwesende Spieler.', `<button class="btn btn-primary" data-action="setTrainingTab" data-id="${t.id}" data-tab="anwesenheit">Zur Anwesenheit</button>`)
+      : `<div class="summary-line">${ratedCount} von ${present.length} bewertet</div>
+    <p class="muted small-note">1 Stern = schwach · 5 Sterne = sehr stark. Gleichen Stern nochmal antippen = Bewertung löschen.</p>
+    <div class="attend-list">${ratingRowsHTML('training', t, present)}</div>`;
+  } else {
+    body = `
     ${!isTrainingComplete(t) ? `<p class="muted small-note">Zählt erst in der Trainingsbeteiligung, sobald jeder Spieler einen Status außer „Offen" hat (noch ${Object.values(t.attendance).filter(s=>s==='offen').length} offen).</p>` : ''}
     <div class="attend-list">
       ${players.slice().sort((a,b) => {
@@ -1518,11 +1737,28 @@ function viewTrainingDetail(id) {
         </div>`;
       }).join('')}
     </div>
+    ${present.length ? `<button class="btn btn-primary btn-block" data-action="setTrainingTab" data-id="${t.id}" data-tab="bewertung">⭐ Spieler bewerten (${ratedCount}/${present.length})</button>` : ''}
     <button class="btn btn-block" data-nav="teams" data-params='{"id":"${t.id}"}'>⚽ Teams aus diesem Training erstellen</button>
 
     ${FEATURES.exercises ? renderSessionPlan(t) : ''}
 
-    <button class="btn btn-danger btn-block" data-action="deleteTraining" data-id="${t.id}">Training löschen</button>
+    <button class="btn btn-danger btn-block" data-action="deleteTraining" data-id="${t.id}">Training löschen</button>`;
+  }
+
+  return `
+  <header class="topbar">
+    <button class="icon-btn" data-back="true">←</button>
+    <h1>${fmtDate(t.date)} <button class="inline-edit-btn" data-action="editTrainingDate" data-id="${t.id}" title="Datum ändern">✎</button></h1>
+    <button class="icon-btn" data-nav="backup">⋮</button>
+  </header>
+  <div class="tab-strip">
+    <div class="segmented">
+      <button class="${tab==='anwesenheit'?'active':''}" data-action="setTrainingTab" data-id="${t.id}" data-tab="anwesenheit">Anwesenheit</button>
+      <button class="${tab==='bewertung'?'active':''}" data-action="setTrainingTab" data-id="${t.id}" data-tab="bewertung">Bewertung${present.length ? ` (${ratedCount}/${present.length})` : ''}</button>
+    </div>
+  </div>
+  <main class="content">
+    ${body}
   </main>
   ${tabbar()}`;
 }
@@ -1936,6 +2172,27 @@ function viewPlayerProfile(id) {
       `}
     </div>
 
+    ${(() => {
+      const rl = playerRatings(p.id);
+      if (!rl.length) return `<div class="card"><div class="card-title">Bewertungen</div><p class="muted">Noch keine Bewertungen – nach Training oder Spiel im Reiter „Bewertung" vergeben.</p></div>`;
+      const tr = rl.filter(r => r.kind === 'T'), sp = rl.filter(r => r.kind === 'S');
+      const avg = l => l.length ? fmtRating(l.reduce((a, r) => a + r.value, 0) / l.length) : '–';
+      return `<div class="card">
+        <div class="card-title">Bewertungen</div>
+        <div class="rating-stats">
+          <div><div class="stat-num">${fmtRating(recentForm(p.id))}</div><div class="stat-label">Form aktuell</div></div>
+          <div><div class="stat-num">${avg(tr)}</div><div class="stat-label">Ø Training (${tr.length})</div></div>
+          <div><div class="stat-num">${avg(sp)}</div><div class="stat-label">Ø Spiel (${sp.length})</div></div>
+        </div>
+        <div class="chart-subtitle">Letzte ${Math.min(10, rl.length)} Bewertungen</div>
+        ${ratingHistorySVG(rl)}
+        <div class="chart-legend chart-legend--row">
+          <div class="legend-item"><span class="legend-dot" style="background:#0a2f70"></span>Training</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f97316"></span>Spiel</div>
+        </div>
+      </div>`;
+    })()}
+
     <div class="card">
       <div class="card-title">Spieleinsätze</div>
       <div class="card-sub">${m.imKader}x im Kader · ${m.startelf}x Startelf · ${m.bank}x Bank${m.nichtImKader ? ` · ${m.nichtImKader}x nicht im Kader` : ''}</div>
@@ -2084,6 +2341,10 @@ function viewMatchList() {
   return `
   ${header('Spieltag')}
   <main class="content">
+    <div class="card card-tap rec-card" data-nav="recommendedLineup">
+      <div class="card-title">⭐ Empfohlene Aufstellung</div>
+      <div class="card-sub">Startelf + 5 Wechsler nach Bewertung & Trainingsbeteiligung · ${defaultRecFormation()}</div>
+    </div>
     <button class="btn btn-primary btn-block" data-action="newMatch">+ Neuer Spieltag</button>
     <button class="btn btn-block" data-nav="importFussball">📋 Spielplan aus fußball.de importieren</button>
     <div class="list">
@@ -2155,7 +2416,7 @@ function viewMatchDetail(id) {
         const prev = idx > 0 ? (m.availability[arr[idx-1].id] || 'offen') : null;
         const divider = idx > 0 && prev === 'offen' && s !== 'offen' ? '<div class="list-divider">Bereits erfasst</div>' : '';
         return `${divider}<div class="attend-row">
-          <div class="attend-name">${esc(p.name)}</div>
+          <div class="attend-name">${esc(p.name)}${formBadge(p.id)}</div>
           <div class="attend-btns">
             ${Object.entries(MATCH_STATUS).map(([key, meta]) => `
               <button class="status-btn ${meta.cls} ${s === key ? 'is-active' : ''} ${s === key ? flashClass('mav:'+p.id) : ''}"
@@ -2181,7 +2442,7 @@ function viewMatchDetail(id) {
       ${benchIds.map(bid => {
         const bp = playerById(bid);
         const isSel = msel && msel.matchId === m.id && msel.kind === 'bench' && msel.playerId === bid;
-        return `<button class="chip bench-chip ${isSel ? 'is-selected' : ''} ${flashClass('bench:' + bid)}" data-action="benchClick" data-id="${m.id}" data-player="${bid}">${esc(bp.name)}</button>`;
+        return `<button class="chip bench-chip ${isSel ? 'is-selected' : ''} ${flashClass('bench:' + bid)}" data-action="benchClick" data-id="${m.id}" data-player="${bid}">${esc(bp.name)}${formBadge(bid)}</button>`;
       }).join('') || '<span class="muted">Niemand auf der Bank.</span>'}
     </div>
     <p class="muted team-hint">${msel && msel.matchId === m.id
@@ -2199,11 +2460,28 @@ function viewMatchDetail(id) {
       </div>
       <div class="small-note muted">Hinzufügen:</div>
       <div class="chip-list">
-        ${activePlayers().filter(p => !(m.kader||[]).includes(p.id)).map(p => `<button class="chip chip-add" data-action="addToKader" data-id="${m.id}" data-player="${p.id}">+ ${esc(p.name)}</button>`).join('')}
+        ${activePlayers().filter(p => !(m.kader||[]).includes(p.id)).map(p => `<button class="chip chip-add" data-action="addToKader" data-id="${m.id}" data-player="${p.id}">+ ${esc(p.name)}${formBadge(p.id)}</button>`).join('')}
       </div>
     </details>
 
+    <p class="muted small-note">★ = Form der letzten Wochen aus deinen Bewertungen (Training + Spiel).</p>
     <button class="btn btn-primary btn-block" data-action="copyMatchWhatsApp" data-id="${m.id}">📋 Für WhatsApp kopieren</button>`;
+  } else if (tab === 'bewertung') {
+    const startIds = Object.values(m.startElf || {});
+    let rp = kaderPlayers.length ? kaderPlayers : activePlayers().filter(p => (m.availability[p.id] || 'offen') === 'zugesagt');
+    const slotLabelOf = pid => {
+      const key = Object.keys(m.startElf || {}).find(k => m.startElf[k] === pid);
+      const sl = key && formation.slots.find(x => x.key === key);
+      return sl ? sl.label : 'Bank';
+    };
+    const slotIdx = pid => { const key = Object.keys(m.startElf || {}).find(k => m.startElf[k] === pid); const i = formation.slots.findIndex(x => x.key === key); return i === -1 ? 99 : i; };
+    rp = rp.slice().sort((a, b) => slotIdx(a.id) - slotIdx(b.id) || a.name.localeCompare(b.name, 'de'));
+    const rated = rp.filter(p => (m.ratings || {})[p.id]).length;
+    body = rp.length === 0
+      ? emptyState('⭐', 'Noch kein Kader – erst Zusagen erfassen oder den Kader festlegen.', '')
+      : `<div class="summary-line">${rated} von ${rp.length} bewertet</div>
+    <p class="muted small-note">1 Stern = schwach · 5 Sterne = sehr stark. Spiele zählen in der Form 1,5-fach. Gleichen Stern nochmal antippen = löschen.</p>
+    <div class="attend-list">${ratingRowsHTML('match', m, rp, p => startIds.includes(p.id) ? slotLabelOf(p.id) : 'Bank')}</div>`;
   } else {
     body = `
     <form class="form" data-form="matchMeta" data-id="${m.id}">
@@ -2230,11 +2508,66 @@ function viewMatchDetail(id) {
     <div class="segmented">
       <button class="${tab==='zusagen'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="zusagen">Zusagen</button>
       <button class="${tab==='aufstellung'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="aufstellung">Aufstellung</button>
+      <button class="${tab==='bewertung'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="bewertung">Bewertung</button>
       <button class="${tab==='infos'?'active':''}" data-action="setMatchTab" data-id="${m.id}" data-tab="infos">Infos</button>
     </div>
   </div>
   <main class="content">
     ${body}
+  </main>
+  ${tabbar()}`;
+}
+
+function viewRecommendedLineup() {
+  const fKey = defaultRecFormation();
+  const rec = recommendedLineup(fKey);
+  const lrd = lastRatingDate();
+  const meta = pid => {
+    const f = ratingForm(pid, 10);
+    const s = playerStats(pid);
+    return `${f.avg != null ? '★' + fmtRating(f.avg) : '★ –'} · ${s.total ? s.quote + ' %' : '– %'} Training`;
+  };
+  const pitch = `
+  <div class="pitch pitch-static">
+    ${rec.formation.slots.map(slot => {
+      const x = rec.assign[slot.key];
+      return `<div class="pitch-slot ${slot.x >= 80 ? 'badge-left' : ''} ${x ? '' : 'pitch-slot-empty'} ${rec.fachfremd(slot.key) ? 'pitch-slot-off' : ''}" style="left:${slot.x}%; top:${slot.y}%;">
+        <div class="pitch-pos">${slot.label}</div>
+        <div class="pitch-name">${x ? esc(x.p.name) : 'frei'}</div>
+        ${x ? formBadge(x.p.id) : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+  return `
+  ${header('Empfohlene Aufstellung')}
+  <main class="content">
+    <p class="muted small-note">Unabhängig von den Zusagen – nur nach deinen Bewertungen (60 %) und der Trainingsbeteiligung (40 %). Aktualisiert sich automatisch nach jeder Bewertung.${lrd ? ` Letzte Bewertung: ${fmtDate(lrd)}.` : ' Noch keine Bewertungen – aktuell zählt nur die Trainingsbeteiligung.'}</p>
+    <div class="select-row">
+      <label>Formation</label>
+      <select data-action="setRecFormation">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===fKey?'selected':''}>${f}</option>`).join('')}</select>
+    </div>
+    ${pitch}
+    <div class="section-head"><span>Auswechselbank (${rec.bench.length})</span></div>
+    <div class="list">
+      ${rec.bench.map(x => `<div class="rec-row card-tap" data-nav="playerProfile" data-params='{"id":"${x.p.id}"}'>
+        <span><span class="rec-pos">${x.p.posPrimary}</span>${esc(x.p.name)}</span>
+        <span class="rec-meta">${meta(x.p.id)}</span>
+      </div>`).join('') || '<p class="muted">Zu wenige Spieler im Kader.</p>'}
+    </div>
+    <details class="details-block" data-remember="recRanking" ${isDetailsOpen('recRanking', false) ? 'open' : ''}>
+      <summary>Alle Spieler nach Wertung</summary>
+      <div class="list">
+        ${activePlayers().map(p => ({ p, sc: recommendationScore(p.id) })).sort((a, b) => b.sc - a.sc).map((x, i) => {
+          const inXI = Object.values(rec.assign).some(y => y.p.id === x.p.id);
+          const onBench = rec.bench.some(y => y.p.id === x.p.id);
+          return `<div class="rec-row">
+            <span><span class="rec-rank">${i + 1}.</span><span class="rec-pos">${x.p.posPrimary}</span>${esc(x.p.name)}${inXI ? ' <span class="rec-tag">Startelf</span>' : onBench ? ' <span class="rec-tag rec-tag-bench">Bank</span>' : ''}</span>
+            <span class="rec-meta">${meta(x.p.id)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </details>
+    ${rec.formation.slots.some(sl => rec.fachfremd(sl.key)) ? '<p class="muted small-note">Gestrichelt = kein passender Spieler für diese Position, bester verfügbarer Spieler eingesetzt.</p>' : ''}
   </main>
   ${tabbar()}`;
 }
@@ -2247,9 +2580,10 @@ function renderPitch(m, formation) {
       const playerId = (m.startElf||{})[slot.key];
       const p = playerId ? playerById(playerId) : null;
       const isSel = sel && sel.matchId === m.id && sel.kind === 'slot' && sel.slot === slot.key;
-      return `<button class="pitch-slot ${p ? '' : 'pitch-slot-empty'} ${isSel ? 'is-selected' : ''} ${flashClass('pslot:' + slot.key)}" style="left:${slot.x}%; top:${slot.y}%;" data-action="pitchSlotClick" data-id="${m.id}" data-slot="${slot.key}">
+      return `<button class="pitch-slot ${slot.x >= 80 ? 'badge-left' : ''} ${p ? '' : 'pitch-slot-empty'} ${isSel ? 'is-selected' : ''} ${flashClass('pslot:' + slot.key)}" style="left:${slot.x}%; top:${slot.y}%;" data-action="pitchSlotClick" data-id="${m.id}" data-slot="${slot.key}">
         <div class="pitch-pos">${slot.label}</div>
         <div class="pitch-name">${p ? esc(p.name) : 'frei'}</div>
+        ${p ? formBadge(p.id) : ''}
       </button>`;
     }).join('')}
   </div>`;
@@ -2506,6 +2840,10 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-action="chooseTraining"]')) {
     nav('teams', { id: e.target.value });
+  }
+  if (e.target.matches('[data-action="setRecFormation"]')) {
+    DB.settings.recFormation = e.target.value;
+    saveDB(); render();
   }
   if (e.target.matches('[data-action="setMatchFormation"]')) {
     state.matchSwapSelection = null;
@@ -2847,12 +3185,27 @@ function handleAction(btn, e) {
   else if (action === 'setAttendance') {
     const t = DB.trainings.find(x => x.id === id);
     t.attendance[btn.dataset.player] = btn.dataset.status;
+    if (btn.dataset.status !== 'anwesend' && t.ratings) delete t.ratings[btn.dataset.player];
     state.flashKeys = ['att:' + btn.dataset.player];
     saveDB(); render();
   }
   else if (action === 'allAttendance') {
     const t = DB.trainings.find(x => x.id === id);
     Object.keys(t.attendance).forEach(pid => t.attendance[pid] = btn.dataset.status);
+    saveDB(); render();
+  }
+  else if (action === 'setTrainingTab') {
+    state.trainingTab[id] = btn.dataset.tab;
+    window.scrollTo(0, 0);
+    render();
+  }
+  else if (action === 'setRating') {
+    const kind = btn.dataset.kind, pid = btn.dataset.player, v = parseInt(btn.dataset.value, 10);
+    const obj = kind === 'match' ? DB.matches.find(x => x.id === id) : DB.trainings.find(x => x.id === id);
+    if (!obj) return;
+    obj.ratings = obj.ratings || {};
+    if (obj.ratings[pid] === v) delete obj.ratings[pid]; else obj.ratings[pid] = v;
+    state.flashKeys = ['rate:' + pid];
     saveDB(); render();
   }
   else if (action === 'setMatchTab') {
