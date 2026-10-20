@@ -718,12 +718,12 @@ function ratingForm(playerId, n) {
   const list = playerRatings(playerId).slice(-(n || 10));
   return { avg: ratingAvg(list), count: list.length, list };
 }
-// Wenige Bewertungen werden zur Mitte (3 Sterne) gezogen, damit eine einzelne
-// 5-Sterne-Bewertung nicht sofort ganz nach oben katapultiert.
+// Wenige Bewertungen werden zur Mitte (3 Sterne) gezogen (wie 3 zusätzliche
+// 3-Sterne-Bewertungen), damit ein paar Top-Bewertungen nicht sofort ganz nach oben katapultieren.
 function ratingScore100(playerId) {
   const f = ratingForm(playerId, 10);
   if (f.avg == null) return null;
-  const adj = (f.avg * f.count + 3) / (f.count + 1);
+  const adj = (f.avg * f.count + 3 * 3) / (f.count + 3);
   return (adj - 1) / 4 * 100;
 }
 function isoDaysAgo(days) {
@@ -771,7 +771,16 @@ function ratingRowsHTML(kind, owner, players, subLabelFn) {
   }).join('');
 }
 
-// Empfehlungs-Score 0–100: Bewertung 60 % + Trainingsbeteiligung 40 %.
+// Anzahl besuchter Trainings im Verhältnis zum fleißigsten Spieler im Team (0–100).
+// Neue Spieler mit wenigen Einheiten bekommen hier wenig Punkte, auch wenn ihre Quote 100 % ist.
+function trainingCountScore(playerId) {
+  const max = Math.max(0, ...activePlayers().map(p => playerStats(p.id).anwesend));
+  if (max === 0) return 50;
+  return Math.min(100, playerStats(playerId).anwesend / max * 100);
+}
+
+// Empfehlungs-Score 0–100 für Kaderauswahl und Empfohlene Aufstellung:
+// Bewertung 40 % + Trainingsbeteiligung (Quote) 20 % + Anzahl besuchter Trainings 40 %.
 // Ohne Bewertung zählt der Spieler als 3 Sterne (neutral).
 function recommendationScore(playerId) {
   const r = ratingScore100(playerId);
@@ -779,7 +788,7 @@ function recommendationScore(playerId) {
   const s = playerStats(playerId);
   let quotePart = 50;
   if (s.total > 0) quotePart = (s.total >= 5 && s.last5Quote != null) ? (s.quote + s.last5Quote) / 2 : s.quote;
-  return ratingPart * 0.6 + quotePart * 0.4;
+  return ratingPart * 0.4 + quotePart * 0.2 + trainingCountScore(playerId) * 0.4;
 }
 function fitFactor(sc) { return sc >= 3 ? 1 : sc >= 2 ? 0.85 : sc >= 1.5 ? 0.7 : sc >= 1 ? 0.6 : 0; }
 
@@ -830,14 +839,17 @@ function recommendedLineup(formationKey) {
     }
     if (!improved) break;
   }
-  // 5 Auswechselspieler: Ersatz-TW (falls vorhanden), je ein Abwehr-, Mittelfeld-, Angriffsspieler, Rest nach Score
+  // Bank: 1 Ersatz-TW (falls vorhanden) + 5 Feldspieler – je ein Abwehr-, Mittelfeld-,
+  // Angriffsspieler, der Rest nach Wertung.
   const rest = pool.filter(x => !used.has(x.p.id)).sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name, 'de'));
-  const bench = [];
-  const take = x => { if (x && !bench.includes(x) && bench.length < 5) bench.push(x); };
+  const benchTW = rest.find(x => x.p.posPrimary === 'TW');
+  const field = rest.filter(x => x.p.posPrimary !== 'TW');
+  const benchField = [];
+  const take = x => { if (x && !benchField.includes(x) && benchField.length < 5) benchField.push(x); };
   const inGroup = (x, g) => GROUP_OF[x.p.posPrimary] === g || (x.p.posSecondary && GROUP_OF[x.p.posSecondary] === g);
-  take(rest.find(x => x.p.posPrimary === 'TW'));
-  ['DEF', 'MID', 'FWD'].forEach(g => take(rest.find(x => !bench.includes(x) && x.p.posPrimary !== 'TW' && inGroup(x, g))));
-  rest.forEach(x => { if (x.p.posPrimary !== 'TW' || !bench.some(b => b.p.posPrimary === 'TW')) take(x); });
+  ['DEF', 'MID', 'FWD'].forEach(g => take(field.find(x => !benchField.includes(x) && inGroup(x, g))));
+  field.forEach(take);
+  const bench = benchTW ? [benchTW, ...benchField] : benchField;
   bench.sort((a, b) => GROUP_ORDER.indexOf(GROUP_OF[a.p.posPrimary]) - GROUP_ORDER.indexOf(GROUP_OF[b.p.posPrimary]));
   const others = pool.filter(x => !used.has(x.p.id) && !bench.includes(x)).sort((a, b) => b.score - a.score);
   return { formation, assign, bench, others, fachfremd: key => assign[key] && slotScore(formation.slots.find(s => s.key === key), assign[key].p) === 0 };
@@ -1278,7 +1290,7 @@ function autoArrangeStartXI(kaderIds, formationKey) {
       if (used.has(p.id)) return;
       const score = slotScore(slot, p);
       if (score <= 0) return;
-      const q = playerStats(p.id).quote;
+      const q = recommendationScore(p.id);
       if (score > bestScore || (score === bestScore && q > bestQuote)) {
         best = p; bestScore = score; bestQuote = q;
       }
@@ -1321,8 +1333,8 @@ function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
   });
   const ranked = candidates.map(p => {
     const s = playerStats(p.id);
-    return { p, quote: s.quote, unentsch: s.unentschuldigt, total: s.total };
-  }).sort((a,b) => b.quote - a.quote || a.unentsch - b.unentsch || b.total - a.total);
+    return { p, score: recommendationScore(p.id), unentsch: s.unentschuldigt, total: s.total };
+  }).sort((a,b) => b.score - a.score || a.unentsch - b.unentsch || b.total - a.total);
 
   const needed = {};
   formation.slots.forEach(s => { needed[s.group] = (needed[s.group]||0) + 1; });
@@ -1361,6 +1373,7 @@ const state = {
   flashKeys: [],
   matchTab: {},
   trainingTab: {},
+  recSel: null,
 };
 
 function isDetailsOpen(key, defaultOpen) {
@@ -1384,6 +1397,7 @@ function nav(route, params = {}) {
   state.sidebarOpen = false;
   state.teamSwapSelection = null;
   state.matchSwapSelection = null;
+  if (route === 'recommendedLineup') state.recSel = null;
   window.scrollTo(0, 0);
   render();
 }
@@ -2343,7 +2357,7 @@ function viewMatchList() {
   <main class="content">
     <div class="card card-tap rec-card" data-nav="recommendedLineup">
       <div class="card-title">⭐ Empfohlene Aufstellung</div>
-      <div class="card-sub">Startelf + 5 Wechsler nach Bewertung & Trainingsbeteiligung · ${defaultRecFormation()}</div>
+      <div class="card-sub">Startelf + 5 Wechsler nach Bewertung, Trainingsanzahl & Beteiligung · ${defaultRecFormation()}</div>
     </div>
     <button class="btn btn-primary btn-block" data-action="newMatch">+ Neuer Spieltag</button>
     <button class="btn btn-block" data-nav="importFussball">📋 Spielplan aus fußball.de importieren</button>
@@ -2518,41 +2532,106 @@ function viewMatchDetail(id) {
   ${tabbar()}`;
 }
 
+// Alternativen für eine Position der Empfohlenen Aufstellung, sortiert nach derselben
+// Wertung (Bewertung, Anzahl Trainings, Beteiligung).
+function recAlternatives(rec, slot, currentId) {
+  // 2 = Hauptposition, 1 = Nebenposition, 0 = gleicher Mannschaftsteil (passt bedingt), -1 = passt nicht
+  const fitLevel = p => {
+    const hits = pos => pos && (slot.pref ? slot.pref.includes(pos) : GROUP_OF[pos] === slot.group);
+    if (hits(p.posPrimary)) return 2;
+    if (hits(p.posSecondary)) return 1;
+    if (GROUP_OF[p.posPrimary] === slot.group || (p.posSecondary && GROUP_OF[p.posSecondary] === slot.group)) return 0;
+    return -1;
+  };
+  const fitText = { 2: 'Hauptposition', 1: 'Nebenposition', 0: 'passt bedingt' };
+  // Erst Spieler mit Haupt-/Nebenposition, dann "passt bedingt" – jeweils nach Gesamtwertung
+  return activePlayers()
+    .filter(p => p.id !== currentId)
+    .map(p => ({ p, lvl: fitLevel(p), score: recommendationScore(p.id) }))
+    .filter(x => x.lvl >= 0)
+    .sort((a, b) => (b.lvl > 0) - (a.lvl > 0) || b.score - a.score || b.lvl - a.lvl || a.p.name.localeCompare(b.p.name, 'de'))
+    .map(x => {
+      const key = Object.keys(rec.assign).find(k => rec.assign[k].p.id === x.p.id);
+      const sl = key && rec.formation.slots.find(z => z.key === key);
+      const where = sl ? `Startelf · ${sl.label}` : rec.bench.some(b => b.p.id === x.p.id) ? 'Bank' : '';
+      return { ...x, fitText: fitText[x.lvl], where };
+    });
+}
+function recMetaHTML(pid) {
+  const f = ratingForm(pid, 10);
+  const s = playerStats(pid);
+  return `<span class="rec-m"><b>${f.avg != null ? '★' + fmtRating(f.avg) : '★ –'}</b> Bewertung</span>
+    <span class="rec-m"><b>${s.anwesend}/${s.total}</b> Trainings</span>
+    <span class="rec-m"><b>${s.total ? s.quote + ' %' : '–'}</b> Beteiligung</span>`;
+}
+function renderRecAltPanel(rec, slot, current) {
+  const alts = recAlternatives(rec, slot, current ? current.id : null);
+  const title = slot.key ? slot.label : (slot.group === 'TW' ? 'TW' : current.posPrimary);
+  return `<div class="rec-alt" id="rec-alt">
+    <div class="rec-alt-head">
+      <div>
+        <div class="rec-alt-title">Alternativen für ${esc(title)}${current ? ' · ' + esc(current.name) : ''}</div>
+        ${current ? `<div class="rec-alt-cur">${recMetaHTML(current.id)}</div>` : ''}
+      </div>
+      <button class="icon-btn rec-alt-close" data-action="recSelect" data-close="1" aria-label="Schließen">✕</button>
+    </div>
+    ${alts.length ? alts.slice(0, 8).map((x, i, arr) => `${i > 0 && arr[i - 1].lvl > 0 && x.lvl === 0 ? '<div class="rec-alt-sep">Passt bedingt</div>' : ''}
+      <div class="rec-alt-row card-tap" data-nav="playerProfile" data-params='{"id":"${x.p.id}"}'>
+        <div class="rec-alt-line">
+          <span><span class="rec-rank">${i + 1}.</span><span class="rec-pos">${x.p.posPrimary}${x.p.posSecondary ? '/' + x.p.posSecondary : ''}</span>${esc(x.p.name)}</span>
+          <span class="rec-fit">${x.fitText}</span>
+        </div>
+        <div class="rec-alt-meta">${recMetaHTML(x.p.id)}${x.where ? `<span class="rec-tag ${x.where === 'Bank' ? 'rec-tag-bench' : ''}">${x.where}</span>` : ''}</div>
+      </div>`).join('') : '<p class="muted">Kein anderer Spieler passt auf diese Position.</p>'}
+    <p class="muted small-note">Erst passende Positionen, dann „passt bedingt“ – jeweils nach Gesamtwertung (Bewertung 40 %, Anzahl Trainings 40 %, Beteiligung 20 %). Antippen öffnet das Spielerprofil.</p>
+  </div>`;
+}
+
 function viewRecommendedLineup() {
   const fKey = defaultRecFormation();
   const rec = recommendedLineup(fKey);
   const lrd = lastRatingDate();
+  const sel = state.recSel;
   const meta = pid => {
     const f = ratingForm(pid, 10);
     const s = playerStats(pid);
-    return `${f.avg != null ? '★' + fmtRating(f.avg) : '★ –'} · ${s.total ? s.quote + ' %' : '– %'} Training`;
+    return `${f.avg != null ? '★' + fmtRating(f.avg) : '★ –'} · ${s.anwesend}/${s.total} Trainings`;
   };
   const pitch = `
   <div class="pitch pitch-static">
     ${rec.formation.slots.map(slot => {
       const x = rec.assign[slot.key];
-      return `<div class="pitch-slot ${slot.x >= 80 ? 'badge-left' : ''} ${x ? '' : 'pitch-slot-empty'} ${rec.fachfremd(slot.key) ? 'pitch-slot-off' : ''}" style="left:${slot.x}%; top:${slot.y}%;">
+      const isSel = sel && sel.type === 'slot' && sel.key === slot.key;
+      return `<button class="pitch-slot ${slot.x >= 80 ? 'badge-left' : ''} ${x ? '' : 'pitch-slot-empty'} ${rec.fachfremd(slot.key) ? 'pitch-slot-off' : ''} ${isSel ? 'is-selected' : ''}" style="left:${slot.x}%; top:${slot.y}%;" data-action="recSelect" data-slot="${slot.key}">
         <div class="pitch-pos">${slot.label}</div>
         <div class="pitch-name">${x ? esc(x.p.name) : 'frei'}</div>
         ${x ? formBadge(x.p.id) : ''}
-      </div>`;
+      </button>`;
     }).join('')}
   </div>`;
+  const selSlot = sel && sel.type === 'slot' && rec.formation.slots.find(z => z.key === sel.key);
+  const benchSlot = p => p.posPrimary === 'TW' ? { group: 'TW' } : { group: GROUP_OF[p.posPrimary], pref: [p.posPrimary] };
+  const tw = rec.bench.filter(x => x.p.posPrimary === 'TW').length;
   return `
   ${header('Empfohlene Aufstellung')}
   <main class="content">
-    <p class="muted small-note">Unabhängig von den Zusagen – nur nach deinen Bewertungen (60 %) und der Trainingsbeteiligung (40 %). Aktualisiert sich automatisch nach jeder Bewertung.${lrd ? ` Letzte Bewertung: ${fmtDate(lrd)}.` : ' Noch keine Bewertungen – aktuell zählt nur die Trainingsbeteiligung.'}</p>
+    <p class="muted small-note">Unabhängig von den Zusagen – nach deinen Bewertungen (40 %), der Anzahl besuchter Trainings (40 %) und der Trainingsbeteiligung (20 %). Neue Spieler mit wenigen Einheiten rutschen dadurch nicht sofort nach oben. Aktualisiert sich automatisch nach jeder Bewertung.${lrd ? ` Letzte Bewertung: ${fmtDate(lrd)}.` : ' Noch keine Bewertungen – aktuell zählt nur die Trainingsbeteiligung.'}</p>
     <div class="select-row">
       <label>Formation</label>
       <select data-action="setRecFormation">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===fKey?'selected':''}>${f}</option>`).join('')}</select>
     </div>
     ${pitch}
-    <div class="section-head"><span>Auswechselbank (${rec.bench.length})</span></div>
+    ${selSlot ? renderRecAltPanel(rec, selSlot, rec.assign[selSlot.key] ? rec.assign[selSlot.key].p : null) : `<p class="muted team-hint">Spieler antippen = Alternativen für seine Position anzeigen.</p>`}
+    <div class="section-head"><span>Auswechselbank (${rec.bench.length}${tw ? ` · ${tw} TW + ${rec.bench.length - tw} Feldspieler` : ''})</span></div>
     <div class="list">
-      ${rec.bench.map(x => `<div class="rec-row card-tap" data-nav="playerProfile" data-params='{"id":"${x.p.id}"}'>
-        <span><span class="rec-pos">${x.p.posPrimary}</span>${esc(x.p.name)}</span>
-        <span class="rec-meta">${meta(x.p.id)}</span>
-      </div>`).join('') || '<p class="muted">Zu wenige Spieler im Kader.</p>'}
+      ${rec.bench.map(x => {
+        const isSel = sel && sel.type === 'bench' && sel.id === x.p.id;
+        return `<button class="rec-row rec-row-btn ${isSel ? 'is-selected' : ''}" data-action="recSelect" data-bench="${x.p.id}">
+          <span><span class="rec-pos">${x.p.posPrimary}</span>${esc(x.p.name)}</span>
+          <span class="rec-meta">${meta(x.p.id)}</span>
+        </button>${isSel ? renderRecAltPanel(rec, benchSlot(x.p), x.p) : ''}`;
+      }).join('') || '<p class="muted">Zu wenige Spieler im Kader.</p>'}
+      ${!tw ? '<p class="muted small-note">Kein Ersatz-TW im Kader vorhanden.</p>' : ''}
     </div>
     <details class="details-block" data-remember="recRanking" ${isDetailsOpen('recRanking', false) ? 'open' : ''}>
       <summary>Alle Spieler nach Wertung</summary>
@@ -2843,6 +2922,7 @@ document.addEventListener('change', (e) => {
   }
   if (e.target.matches('[data-action="setRecFormation"]')) {
     DB.settings.recFormation = e.target.value;
+    state.recSel = null;
     saveDB(); render();
   }
   if (e.target.matches('[data-action="setMatchFormation"]')) {
@@ -3194,6 +3274,19 @@ function handleAction(btn, e) {
     Object.keys(t.attendance).forEach(pid => t.attendance[pid] = btn.dataset.status);
     saveDB(); render();
   }
+  else if (action === 'recSelect') {
+    const prev = state.recSel;
+    let next = null;
+    if (btn.dataset.slot) next = { type: 'slot', key: btn.dataset.slot };
+    else if (btn.dataset.bench) next = { type: 'bench', id: btn.dataset.bench };
+    if (btn.dataset.close || (prev && next && prev.type === next.type && (prev.key || prev.id) === (next.key || next.id))) next = null;
+    state.recSel = next;
+    render();
+    if (next) {
+      const el = document.getElementById('rec-alt');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
   else if (action === 'setTrainingTab') {
     state.trainingTab[id] = btn.dataset.tab;
     window.scrollTo(0, 0);
@@ -3491,7 +3584,7 @@ function handleAction(btn, e) {
     if (zugesagt.length === 0) { toast('Noch keine Zusagen erfasst'); return; }
     const hasManual = (m.kader && m.kader.length) || Object.keys(m.startElf||{}).length;
     if (hasManual && !confirm('Kader und Startelf werden mit den Zusagen neu aufgebaut. Fortfahren?')) return;
-    // Mehr Zusagen als Kaderplätze: die mit der höchsten Trainingsbeteiligung kommen rein,
+    // Mehr Zusagen als Kaderplätze: die mit der höchsten Wertung (Bewertung, Quote, Anzahl Trainings) kommen rein,
     // positionsgerecht über dieselbe Logik wie die Automatik.
     let kaderIds = zugesagt.map(p => p.id);
     let cut = 0;
