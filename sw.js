@@ -1,5 +1,5 @@
 // Bei jedem Deploy diese Versionsnummer erhöhen, damit Clients den neuen Cache laden.
-const CACHE_VERSION = 'u19-trainer-v34';
+const CACHE_VERSION = 'u19-trainer-v37';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -30,6 +30,9 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
+
+  // Fremde Adressen (z. B. Spielplan-Abruf über den Worker) nie aus dem Cache bedienen
+  if (new URL(req.url).origin !== self.location.origin) return;
 
   const isHTML = req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
 

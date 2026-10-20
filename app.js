@@ -843,17 +843,67 @@ function recommendedLineup(formationKey) {
   // Angriffsspieler, der Rest nach Wertung.
   const rest = pool.filter(x => !used.has(x.p.id)).sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name, 'de'));
   const benchTW = rest.find(x => x.p.posPrimary === 'TW');
+  if (benchTW) benchTW.role = 'TW';
   const field = rest.filter(x => x.p.posPrimary !== 'TW');
-  const benchField = [];
-  const take = x => { if (x && !benchField.includes(x) && benchField.length < 5) benchField.push(x); };
-  const inGroup = (x, g) => GROUP_OF[x.p.posPrimary] === g || (x.p.posSecondary && GROUP_OF[x.p.posSecondary] === g);
-  ['DEF', 'MID', 'FWD'].forEach(g => take(field.find(x => !benchField.includes(x) && inGroup(x, g))));
-  field.forEach(take);
+  const benchField = pickBenchRoles(field);
   const bench = benchTW ? [benchTW, ...benchField] : benchField;
-  bench.sort((a, b) => GROUP_ORDER.indexOf(GROUP_OF[a.p.posPrimary]) - GROUP_ORDER.indexOf(GROUP_OF[b.p.posPrimary]));
   const others = pool.filter(x => !used.has(x.p.id) && !bench.includes(x)).sort((a, b) => b.score - a.score);
   return { formation, assign, bench, others, fachfremd: key => assign[key] && slotScore(formation.slots.find(s => s.key === key), assign[key].p) === 0 };
 }
+// Bank-Rollen: idealerweise Außenverteidiger, Innenverteidiger, 6er, Flügelspieler, Stürmer
+// (= 2 Verteidiger, 2 Mittelfeldspieler, 1 Offensivspieler).
+const BENCH_ROLES = [
+  { key: 'AV',     label: 'AV',     prim: ['LV', 'RV'],             alt: [],              area: 'DEF' },
+  { key: 'IV',     label: 'IV',     prim: ['IV'],                   alt: [],              area: 'DEF' },
+  { key: '6er',    label: '6er',    prim: ['DM'],                   alt: ['ZM'],          area: 'MID' },
+  { key: 'Flügel', label: 'Flügel', prim: ['LM', 'RM', 'LF', 'RF'], alt: [],              area: 'MID' },
+  { key: 'ST',     label: 'ST',     prim: ['ST'],                   alt: ['OM', 'LF', 'RF'], area: 'OFF' },
+];
+const BENCH_AREA = { IV: 'DEF', LV: 'DEF', RV: 'DEF', DM: 'MID', ZM: 'MID', OM: 'MID', LM: 'MID', RM: 'MID', ST: 'OFF', LF: 'OFF', RF: 'OFF' };
+// Wie gut passt ein Spieler auf eine Bank-Rolle? 0 = gar nicht.
+function benchRoleFit(role, p) {
+  if (role.prim.includes(p.posPrimary)) return 5;
+  if (p.posSecondary && role.prim.includes(p.posSecondary)) return 4;
+  if (role.alt.includes(p.posPrimary)) return 3;
+  if (p.posSecondary && role.alt.includes(p.posSecondary)) return 2;
+  if (BENCH_AREA[p.posPrimary] === role.area || (p.posSecondary && BENCH_AREA[p.posSecondary] === role.area)) return 1;
+  return 0;
+}
+// Verteilt die 5 Bankplätze auf die Rollen: Passung zählt vor Wertung. Alle Reihenfolgen
+// der Rollen werden durchprobiert und die beste Gesamtverteilung genommen.
+function pickBenchRoles(field) {
+  const perms = [];
+  const permute = (arr, acc) => { if (!arr.length) { perms.push(acc); return; } arr.forEach((r, i) => permute(arr.filter((_, j) => j !== i), [...acc, r])); };
+  permute(BENCH_ROLES, []);
+  let best = null;
+  perms.forEach(order => {
+    const used = new Set(); const picks = {}; let total = 0;
+    order.forEach(role => {
+      let cand = null, cv = -1;
+      field.forEach(x => {
+        if (used.has(x.p.id)) return;
+        const f = benchRoleFit(role, x.p);
+        if (!f) return;
+        const v = f * 1000 + x.score;
+        if (v > cv) { cv = v; cand = x; }
+      });
+      if (cand) { used.add(cand.p.id); picks[role.key] = cand; total += cv; }
+    });
+    if (!best || total > best.total) best = { total, picks, used };
+  });
+  const out = [];
+  BENCH_ROLES.forEach(role => { const x = best.picks[role.key]; if (x) { x.role = role.label; out.push(x); } });
+  // Rollen ohne passenden Spieler: bester Rest, möglichst ohne doppelte Position
+  const restField = field.filter(x => !best.used.has(x.p.id));
+  while (out.length < 5 && restField.length) {
+    const fresh = restField.find(x => !out.some(o => o.p.posPrimary === x.p.posPrimary)) || restField[0];
+    restField.splice(restField.indexOf(fresh), 1);
+    fresh.role = fresh.p.posPrimary;
+    out.push(fresh);
+  }
+  return out;
+}
+
 function defaultRecFormation() {
   if (DB.settings.recFormation && FORMATIONS[DB.settings.recFormation]) return DB.settings.recFormation;
   const last = DB.matches.slice().sort((a, b) => b.date < a.date ? -1 : 1)[0];
@@ -1354,6 +1404,175 @@ function autoSelectKaderAndXI(formationKey, kaderSize, availabilityMap) {
   const kaderIds = chosen.slice(0, Math.max(kaderSize, 11)).map(p => p.id);
   const { startElf, bench } = autoArrangeStartXI(kaderIds, formationKey);
   return { kaderIds: kaderIds.slice(0, kaderSize), startElf, bench: bench.filter(id => kaderIds.slice(0,kaderSize).includes(id)) };
+}
+
+/* --------------------- Spielplan-Abruf (fußball.de) ---------------------- */
+// Auf Knopfdruck: Die App fragt über einen kleinen Cloudflare Worker (Vermittler,
+// weil der Browser fußball.de nicht direkt lesen darf) die Mannschaftsspielplan-Seite ab,
+// liest die Spiele heraus und übernimmt neue oder geänderte Spiele.
+let scheduleSyncRunning = false;
+
+function cleanText(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
+
+// Liest die Spiele aus dem HTML der fußball.de-Seite "Mannschaftsspielplan".
+// Bewusst robust gebaut: Anker ist der Link zum Spiel (/spiel/.../-/spiel/ID),
+// Datum/Uhrzeit/Wettbewerb kommen aus derselben Zeile bzw. der Überschriftszeile davor.
+function parseFussballMatchplanHTML(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const seen = new Set();
+  const rows = [];
+  doc.querySelectorAll('a[href*="/spiel/"]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    const idm = href.match(/\/-\/spiel\/([A-Za-z0-9]+)/) || href.match(/\/spiel\/[^?#]*?([A-Z0-9]{20,})/);
+    if (!idm) return;
+    const id = idm[1];
+    if (seen.has(id)) return;
+    const tr = a.closest('tr') || a.parentElement;
+    if (!tr) return;
+    // Kontext: die Spielzeile plus Überschriftszeilen davor (bis zur vorigen Spielzeile)
+    const ctx = [tr];
+    let prev = tr.previousElementSibling, k = 0;
+    while (prev && k < 3 && !prev.querySelector('a[href*="/spiel/"]')) { ctx.unshift(prev); prev = prev.previousElementSibling; k++; }
+    const ctxText = cleanText(ctx.map(el => el.textContent).join(' | '));
+    // Mannschaften
+    let teams = [...tr.querySelectorAll('.club-name')].map(el => cleanText(el.textContent)).filter(Boolean);
+    if (teams.length < 2) teams = [...tr.querySelectorAll('a[href*="/mannschaft/"]')].map(el => cleanText(el.textContent)).filter(Boolean);
+    teams = teams.filter((t, i) => teams.indexOf(t) === i);
+    if (teams.length < 2) return;
+    // Datum
+    const dm = ctxText.match(/(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})(?!\d)/);
+    if (!dm) return;
+    const year = dm[3].length === 2 ? '20' + dm[3] : dm[3];
+    const date = `${year}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`;
+    // Uhrzeit: bevorzugt Datumsspalte bzw. "18:00 Uhr", sonst plausible HH:MM (kein Ergebnis wie 2:1)
+    const dateCell = tr.querySelector('.column-date');
+    const timeSrc = (dateCell ? cleanText(dateCell.textContent) + ' ' : '') + ctxText;
+    let tm = timeSrc.match(/(\d{1,2}):(\d{2})\s*Uhr/) || (dateCell && cleanText(dateCell.textContent).match(/(\d{1,2}):(\d{2})/));
+    if (!tm) {
+      const all = [...ctxText.matchAll(/(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])/g)].filter(x => +x[1] >= 6 && +x[1] <= 23 && x[2].length === 2);
+      tm = all[0];
+    }
+    const time = tm ? `${String(tm[1]).padStart(2, '0')}:${tm[2]}` : '';
+    // Wettbewerb aus der Überschrift ("… | A-Junioren | Kreispokal")
+    let competition = '';
+    const head = ctx.length > 1 ? cleanText(ctx.slice(0, -1).map(el => el.textContent).join(' | ')) : '';
+    if (head) {
+      const parts = head.split('|').map(cleanText).filter(p => p && !/\d{1,2}\.\d{1,2}\.\d{2,4}/.test(p) && !/junioren|herren|frauen|juniorinnen/i.test(p));
+      competition = parts[parts.length - 1] || '';
+    }
+    if (!competition) { const cm = ctxText.match(/(Kreis[a-zäöü]*pokal|[A-Za-zäöü]*pokal|[A-Za-zäöü]*freundschaftsspiel\w*|Meisterschaft|Hallenturnier|Turnier)/i); competition = cm ? cm[1] : ''; }
+    if (/freundschaft/i.test(competition)) competition = 'Freundschaftsspiel';
+    const status = /abgesetzt|annulliert|abgesagt|Absetzung/i.test(ctxText) ? 'abgesetzt' : 'geplant';
+    const url = href.startsWith('http') ? href : 'https://www.fussball.de' + href;
+    seen.add(id);
+    rows.push({ id, date, time, teams: teams.slice(0, 2), competition, url, status });
+  });
+  // Eigene Mannschaft = Team, das in den meisten Spielen vorkommt
+  const count = {};
+  rows.forEach(r => r.teams.forEach(t => { count[t] = (count[t] || 0) + 1; }));
+  const own = Object.keys(count).sort((a, b) => count[b] - count[a] || (/menden/i.test(b) ? 1 : 0) - (/menden/i.test(a) ? 1 : 0))[0] || '';
+  return {
+    team: own,
+    matches: rows.map(r => {
+      const home = r.teams[0] === own;
+      return { id: r.id, date: r.date, time: r.time, home, opponent: home ? r.teams[1] : r.teams[0], competition: r.competition, url: r.url, status: r.status };
+    }),
+  };
+}
+
+function askProxyUrl() {
+  const cur = DB.settings.fdProxyUrl || '';
+  const v = window.prompt('Abruf-Adresse (dein Cloudflare Worker, z. B. https://spielplan.deinname.workers.dev):', cur);
+  if (v == null) return false;
+  const url = v.trim();
+  if (url && !/^https:\/\/\S+$/.test(url) && !/^http:\/\/localhost/.test(url)) { toast('Bitte eine Adresse mit https:// eingeben'); return false; }
+  DB.settings.fdProxyUrl = url;
+  saveDB(); render();
+  return !!url;
+}
+
+async function syncSchedule() {
+  if (scheduleSyncRunning) return;
+  if (!DB.settings.fdProxyUrl && !askProxyUrl()) return;
+  if (!navigator.onLine) { toast('Offline – Abruf nicht möglich'); return; }
+  scheduleSyncRunning = true;
+  render();
+  try {
+    const res = await fetch(DB.settings.fdProxyUrl + (DB.settings.fdProxyUrl.includes('?') ? '&' : '?') + 'ts=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const feed = parseFussballMatchplanHTML(await res.text());
+    if (!feed.matches.length) { toast('Keine Spiele gefunden – Seite konnte nicht gelesen werden'); return; }
+    const result = mergeSchedule(feed);
+    DB.settings.scheduleSync = { updatedAt: new Date().toISOString(), team: feed.team, found: feed.matches.length };
+    saveDB();
+    const parts = [];
+    if (result.added) parts.push(`${result.added} neue${result.added === 1 ? 's' : ''} Spiel${result.added === 1 ? '' : 'e'}`);
+    if (result.changed) parts.push(`${result.changed} geändert`);
+    if (result.cancelled) parts.push(`${result.cancelled} abgesetzt`);
+    toast(parts.length ? 'Spielplan: ' + parts.join(', ') + ' ✓' : 'Spielplan ist aktuell ✓');
+  } catch (err) {
+    toast('Abruf fehlgeschlagen – Abruf-Adresse prüfen');
+  } finally {
+    scheduleSyncRunning = false;
+    render();
+  }
+}
+
+function mergeSchedule(feed) {
+  const out = { added: 0, changed: 0, cancelled: 0 };
+  if (!feed || !Array.isArray(feed.matches)) return out;
+  DB.settings.deletedExtIds = DB.settings.deletedExtIds || [];
+  const today = todayISO();
+  const lastFormation = (DB.matches.slice().sort((a, b) => b.date < a.date ? -1 : 1)[0] || {}).formation;
+  feed.matches.forEach(f => {
+    if (!f || !f.id || !/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) return;
+    if (DB.settings.deletedExtIds.includes(f.id)) return;
+    let m = DB.matches.find(x => x.extId === f.id);
+    // Bereits von Hand angelegtes Spiel am selben Tag ohne Verknüpfung -> verknüpfen
+    if (!m) m = DB.matches.find(x => !x.extId && x.date === f.date);
+    const cancelled = f.status === 'abgesetzt';
+    if (!m) {
+      if (f.date < today || cancelled) return; // Vergangene/abgesetzte Spiele nicht neu anlegen
+      const availability = {};
+      activePlayers().forEach(p => { availability[p.id] = 'offen'; });
+      DB.matches.push({
+        id: uid('m'), extId: f.id, date: f.date, time: f.time || '', home: f.home !== false,
+        opponent: f.opponent || '', competition: f.competition || '', url: f.url || '',
+        cancelled: false, formation: FORMATIONS[lastFormation] ? lastFormation : '4-3-3',
+        kaderSize: 18, availability, kader: [], startElf: {}, completed: false, ratings: {},
+      });
+      out.added++;
+      return;
+    }
+    const before = JSON.stringify([m.extId, m.date, m.time, m.home, m.opponent, m.competition, m.cancelled]);
+    m.extId = f.id;
+    m.date = f.date;
+    m.time = f.time || '';
+    m.home = f.home !== false;
+    if (f.opponent) m.opponent = f.opponent;
+    m.competition = f.competition || m.competition || '';
+    m.url = f.url || m.url || '';
+    const wasCancelled = !!m.cancelled;
+    m.cancelled = cancelled;
+    const after = JSON.stringify([m.extId, m.date, m.time, m.home, m.opponent, m.competition, m.cancelled]);
+    if (cancelled && !wasCancelled) out.cancelled++;
+    else if (before !== after && JSON.parse(before)[0]) out.changed++;
+  });
+  return out;
+}
+
+function fmtDateTimeShort(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ', ' +
+    d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' Uhr';
+}
+function matchInfoLine(m) {
+  const bits = [];
+  if (m.time) bits.push(m.time + ' Uhr');
+  if (m.extId || m.home === false || m.home === true) bits.push(m.home === false ? 'Auswärts' : 'Heim');
+  if (m.competition) bits.push(m.competition);
+  return bits.join(' · ');
 }
 
 /* --------------------------------- State ---------------------------------- */
@@ -2357,14 +2576,19 @@ function viewMatchList() {
   <main class="content">
     <div class="card card-tap rec-card" data-nav="recommendedLineup">
       <div class="card-title">⭐ Empfohlene Aufstellung</div>
-      <div class="card-sub">Startelf + 5 Wechsler nach Bewertung, Trainingsanzahl & Beteiligung · ${defaultRecFormation()}</div>
+      <div class="card-sub">Startelf + 6 Wechsler (1 TW + 5) nach Bewertung, Trainingsanzahl & Beteiligung · ${defaultRecFormation()}</div>
+    </div>
+    <button class="btn btn-block sync-btn" data-action="syncSchedule" ${scheduleSyncRunning ? 'disabled' : ''}>${scheduleSyncRunning ? '⏳ Spielplan wird abgerufen …' : '🔄 Spielplan von fußball.de abrufen'}</button>
+    <div class="sync-line">
+      <span>${DB.settings.scheduleSync && DB.settings.scheduleSync.updatedAt ? `Zuletzt abgerufen: ${fmtDateTimeShort(DB.settings.scheduleSync.updatedAt)}` : (DB.settings.fdProxyUrl ? 'Noch nicht abgerufen' : 'Abruf-Adresse noch nicht eingerichtet')}</span>
+      <button class="link-btn" data-action="editProxyUrl">Abruf-Adresse</button>
     </div>
     <button class="btn btn-primary btn-block" data-action="newMatch">+ Neuer Spieltag</button>
-    <button class="btn btn-block" data-nav="importFussball">📋 Spielplan aus fußball.de importieren</button>
     <div class="list">
-      ${list.length === 0 ? emptyState('🏟️', 'Noch keine Spieltage angelegt.', '<button class="btn btn-primary" data-nav="importFussball">Spielplan importieren</button>') : list.map(m => `
+      ${list.length === 0 ? emptyState('🏟️', 'Noch keine Spieltage angelegt.', '<button class="btn btn-primary" data-action="syncSchedule">Spielplan abrufen</button>') : list.map(m => `
         <div class="card card-tap" data-nav="matchDetail" data-params='{"id":"${m.id}"}'>
-          <div class="card-title">${fmtDate(m.date)} vs. ${esc(m.opponent || '–')} ${!m.completed ? '<span class="badge-open">Offen</span>' : ''}</div>
+          <div class="card-title">${fmtDate(m.date)} vs. ${esc(m.opponent || '–')} ${m.cancelled ? '<span class="badge-cancel">Abgesetzt</span>' : !m.completed ? '<span class="badge-open">Offen</span>' : ''}</div>
+          ${matchInfoLine(m) ? `<div class="card-sub">${esc(matchInfoLine(m))}</div>` : ''}
           <div class="card-sub">${m.formation} · Kader ${((m.kader)||[]).length}/${m.kaderSize}</div>
         </div>`).join('')}
     </div>
@@ -2498,6 +2722,12 @@ function viewMatchDetail(id) {
     <div class="attend-list">${ratingRowsHTML('match', m, rp, p => startIds.includes(p.id) ? slotLabelOf(p.id) : 'Bank')}</div>`;
   } else {
     body = `
+    ${m.extId ? `<div class="card fd-card">
+      <div class="card-title">Von fußball.de${m.cancelled ? ' <span class="badge-cancel">Abgesetzt</span>' : ''}</div>
+      <div class="card-sub">${esc(matchInfoLine(m) || '')}</div>
+      <p class="muted small-note">Datum, Uhrzeit und Gegner werden beim nächsten Abruf („Spielplan von fußball.de abrufen") aktualisiert, falls sich auf fußball.de etwas geändert hat.</p>
+      ${m.url ? `<a class="link-btn" href="${esc(m.url)}" target="_blank" rel="noopener">Spiel auf fußball.de öffnen ↗</a>` : ''}
+    </div>` : ''}
     <form class="form" data-form="matchMeta" data-id="${m.id}">
       <label>Datum</label><input name="date" type="date" value="${m.date}">
       <label>Gegner</label><input name="opponent" value="${esc(m.opponent||'')}">
@@ -2566,7 +2796,7 @@ function recMetaHTML(pid) {
 }
 function renderRecAltPanel(rec, slot, current) {
   const alts = recAlternatives(rec, slot, current ? current.id : null);
-  const title = slot.key ? slot.label : (slot.group === 'TW' ? 'TW' : current.posPrimary);
+  const title = slot.label || (slot.group === 'TW' ? 'TW' : current.posPrimary);
   return `<div class="rec-alt" id="rec-alt">
     <div class="rec-alt-head">
       <div>
@@ -2610,7 +2840,12 @@ function viewRecommendedLineup() {
     }).join('')}
   </div>`;
   const selSlot = sel && sel.type === 'slot' && rec.formation.slots.find(z => z.key === sel.key);
-  const benchSlot = p => p.posPrimary === 'TW' ? { group: 'TW' } : { group: GROUP_OF[p.posPrimary], pref: [p.posPrimary] };
+  const benchSlot = x => {
+    if (x.p.posPrimary === 'TW') return { group: 'TW', label: 'TW' };
+    const role = BENCH_ROLES.find(r => r.label === x.role);
+    if (role) return { group: GROUP_OF[role.prim[0]], pref: role.prim.concat(role.alt), label: role.label };
+    return { group: GROUP_OF[x.p.posPrimary], pref: [x.p.posPrimary], label: x.p.posPrimary };
+  };
   const tw = rec.bench.filter(x => x.p.posPrimary === 'TW').length;
   return `
   ${header('Empfohlene Aufstellung')}
@@ -2627,9 +2862,9 @@ function viewRecommendedLineup() {
       ${rec.bench.map(x => {
         const isSel = sel && sel.type === 'bench' && sel.id === x.p.id;
         return `<button class="rec-row rec-row-btn ${isSel ? 'is-selected' : ''}" data-action="recSelect" data-bench="${x.p.id}">
-          <span><span class="rec-pos">${x.p.posPrimary}</span>${esc(x.p.name)}</span>
+          <span><span class="rec-role">${x.role || x.p.posPrimary}</span>${esc(x.p.name)} <span class="rec-pos-small">${x.p.posPrimary}${x.p.posSecondary ? '/' + x.p.posSecondary : ''}</span></span>
           <span class="rec-meta">${meta(x.p.id)}</span>
-        </button>${isSel ? renderRecAltPanel(rec, benchSlot(x.p), x.p) : ''}`;
+        </button>${isSel ? renderRecAltPanel(rec, benchSlot(x), x.p) : ''}`;
       }).join('') || '<p class="muted">Zu wenige Spieler im Kader.</p>'}
       ${!tw ? '<p class="muted small-note">Kein Ersatz-TW im Kader vorhanden.</p>' : ''}
     </div>
@@ -3274,6 +3509,12 @@ function handleAction(btn, e) {
     Object.keys(t.attendance).forEach(pid => t.attendance[pid] = btn.dataset.status);
     saveDB(); render();
   }
+  else if (action === 'syncSchedule') {
+    syncSchedule();
+  }
+  else if (action === 'editProxyUrl') {
+    askProxyUrl();
+  }
   else if (action === 'recSelect') {
     const prev = state.recSel;
     let next = null;
@@ -3661,10 +3902,16 @@ function handleAction(btn, e) {
     if (idx === -1) return;
     const removed = DB.matches[idx];
     DB.matches.splice(idx, 1);
+    // Gelöschte fußball.de-Spiele beim nächsten Abgleich nicht wieder anlegen
+    if (removed.extId) {
+      DB.settings.deletedExtIds = DB.settings.deletedExtIds || [];
+      DB.settings.deletedExtIds.push(removed.extId);
+    }
     saveDB();
     nav('matchList');
     showUndoToast('Spieltag gelöscht', () => {
       DB.matches.splice(idx, 0, removed);
+      if (removed.extId) DB.settings.deletedExtIds = (DB.settings.deletedExtIds || []).filter(x => x !== removed.extId);
       saveDB(); render();
     });
   }
