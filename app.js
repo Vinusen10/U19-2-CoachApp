@@ -1593,6 +1593,7 @@ const state = {
   matchTab: {},
   trainingTab: {},
   recSel: null,
+  compareIds: [],
 };
 
 function isDetailsOpen(key, defaultOpen) {
@@ -1671,6 +1672,7 @@ function render() {
     case 'matchList': html = viewMatchList(); break;
     case 'matchDetail': html = viewMatchDetail(state.params.id); break;
     case 'recommendedLineup': html = viewRecommendedLineup(); break;
+    case 'comparePlayers': html = viewComparePlayers(); break;
     case 'backup': html = viewBackup(); break;
     case 'exercises': html = viewExercises(); break;
     case 'exerciseForm': html = viewExerciseForm(state.params.id); break;
@@ -1717,7 +1719,7 @@ function topLevel(route) {
   if (['exercises','exerciseForm'].includes(route)) return 'exercises';
   if (['teams'].includes(route)) return 'teams';
   if (['matchList','matchDetail','importFussball','recommendedLineup'].includes(route)) return 'matchList';
-  if (['players','playerProfile','playerForm'].includes(route)) return 'players';
+  if (['players','playerProfile','playerForm','comparePlayers'].includes(route)) return 'players';
   if (['notes','noteForm','generalNoteForm'].includes(route)) return 'notes';
   return route;
 }
@@ -2256,6 +2258,7 @@ function viewPlayers() {
   ${header('Spieler')}
   <main class="content">
     <button class="btn btn-primary btn-block" data-nav="playerForm" data-params='{}'>+ Spieler hinzufügen</button>
+    <button class="btn btn-block" data-action="openCompare">⚖️ Spieler vergleichen</button>
 
     <div class="filter-row">
       <input id="playerSearch" type="text" placeholder="Suche nach Namen…" value="${esc(f.search)}">
@@ -2381,6 +2384,7 @@ function viewPlayerProfile(id) {
         <div class="muted">Jg. ${p.jahrgang} · ${p.posPrimary}${p.posSecondary ? ' / ' + p.posSecondary : ''}${p.birthday ? ' · 🎂 ' + fmtBirthday(p.birthday) : ''}</div>
       </div>
     </div>
+    <button class="btn btn-block" data-action="openCompare" data-player="${p.id}">⚖️ Mit anderen Spielern vergleichen</button>
 
     <div class="grid2">
       <div class="stat-card"><div class="stat-num">${s.total}</div><div class="stat-label">Trainings</div></div>
@@ -2882,6 +2886,134 @@ function viewRecommendedLineup() {
       </div>
     </details>
     ${rec.formation.slots.some(sl => rec.fachfremd(sl.key)) ? '<p class="muted small-note">Gestrichelt = kein passender Spieler für diese Position, bester verfügbarer Spieler eingesetzt.</p>' : ''}
+  </main>
+  ${tabbar()}`;
+}
+
+/* ----------------------------- Spielervergleich ------------------------------ */
+const COMPARE_COLORS = ['#0a2f70', '#f97316', '#16a34a'];
+
+// Alle Kennzahlen eines Spielers für den Vergleich
+function compareData(p) {
+  const s = playerStats(p.id);
+  const ms = matchStats(p.id);
+  const rl = playerRatings(p.id);
+  const tr = rl.filter(r => r.kind === 'T'), sp = rl.filter(r => r.kind === 'S');
+  const avg = l => l.length ? l.reduce((a, r) => a + r.value, 0) / l.length : null;
+  const ranking = activePlayers().map(x => ({ id: x.id, sc: recommendationScore(x.id) })).sort((a, b) => b.sc - a.sc);
+  const rank = ranking.findIndex(x => x.id === p.id);
+  return {
+    score: recommendationScore(p.id),
+    rank: rank === -1 ? null : rank + 1, rankOf: ranking.length,
+    anwesend: s.anwesend, total: s.total,
+    quote: s.total ? s.quote : null,
+    last5: s.last5Quote,
+    unentsch: s.unentschuldigt, abgesagt: s.abgesagt,
+    form: recentForm(p.id),
+    avgT: avg(tr), avgS: avg(sp), ratings: rl.length, ratingList: rl,
+    kader: ms.imKader, startelf: ms.startelf,
+    startQuote: ms.imKader ? Math.round(ms.startelf / ms.imKader * 100) : null,
+  };
+}
+
+// Mehrere Bewertungsverläufe in einer Grafik (x = Datum)
+function compareRatingSVG(players, datas, width, height) {
+  width = width || 320; height = height || 140;
+  const all = [];
+  datas.forEach(d => d.ratingList.slice(-10).forEach(r => all.push(r.date)));
+  if (!all.length) return '<p class="muted">Noch keine Bewertungen vorhanden.</p>';
+  const toT = d => new Date(d + 'T12:00:00').getTime();
+  const tMin = Math.min(...all.map(toT)), tMax = Math.max(...all.map(toT));
+  const padL = 20, padR = 10, padT = 10, padB = 10;
+  const xAt = d => tMax === tMin ? (padL + (width - padL - padR) / 2) : padL + (toT(d) - tMin) / (tMax - tMin) * (width - padL - padR);
+  const yAt = v => padT + (5 - v) * (height - padT - padB) / 4;
+  let svg = '';
+  for (let v = 1; v <= 5; v++) {
+    svg += `<line x1="${padL}" y1="${yAt(v)}" x2="${width - padR}" y2="${yAt(v)}" stroke="#e2e8f5" stroke-width="1"/>`;
+    svg += `<text x="4" y="${yAt(v) + 4}" font-size="10" fill="#64748b">${v}</text>`;
+  }
+  datas.forEach((d, i) => {
+    const pts = d.ratingList.slice(-10);
+    if (!pts.length) return;
+    const c = COMPARE_COLORS[i];
+    if (pts.length > 1) svg += `<polyline points="${pts.map(r => `${xAt(r.date).toFixed(1)},${yAt(r.value).toFixed(1)}`).join(' ')}" fill="none" stroke="${c}" stroke-width="2.5" stroke-linejoin="round" opacity="0.85"/>`;
+    svg += pts.map(r => `<circle cx="${xAt(r.date).toFixed(1)}" cy="${yAt(r.value).toFixed(1)}" r="${r.kind === 'S' ? 5 : 4}" fill="${c}" stroke="#fff" stroke-width="1.5"/>`).join('');
+  });
+  const minD = all.reduce((a, b) => a < b ? a : b), maxD = all.reduce((a, b) => a > b ? a : b);
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">${svg}</svg>
+  <div class="chart-axis-labels"><span>${esc(fmtDate(minD))}</span><span>${esc(fmtDate(maxD))}</span></div>`;
+}
+
+function viewComparePlayers() {
+  const ids = state.compareIds.filter(id => playerById(id));
+  const players = ids.map(playerById);
+  const datas = players.map(compareData);
+  const pickList = activePlayers().slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+  // Eine Zeile der Tabelle; better: 'high' | 'low' | null markiert den besten Wert
+  const row = (label, getVal, fmt, better) => {
+    const vals = datas.map(getVal);
+    const nums = vals.filter(v => v != null);
+    let best = null;
+    if (better && nums.length >= 2 && new Set(nums.map(v => Math.round(v * 100))).size > 1) best = better === 'high' ? Math.max(...nums) : Math.min(...nums);
+    return `<tr><th>${label}</th>${vals.map(v => `<td class="${best != null && v != null && Math.abs(v - best) < 1e-9 ? 'cmp-best' : ''}">${v == null ? '–' : fmt(v)}</td>`).join('')}</tr>`;
+  };
+  const section = title => `<tr class="cmp-sec"><th colspan="${players.length + 1}">${title}</th></tr>`;
+  const pct = v => Math.round(v) + ' %';
+  const star = v => '★' + fmtRating(v);
+  const int = v => String(v);
+
+  const table = players.length < 2 ? '' : `
+  <div class="cmp-wrap">
+    <table class="cmp-table">
+      <thead><tr><th></th>${players.map((p, i) => `<th class="cmp-head">
+        <button class="cmp-avatar" data-nav="playerProfile" data-params='{"id":"${p.id}"}'>${avatarSVG(p.avatar, 36)}</button>
+        <div class="cmp-name" style="color:${COMPARE_COLORS[i]}">${esc(p.name)}</div>
+        <div class="cmp-pos">${p.posPrimary}${p.posSecondary ? '/' + p.posSecondary : ''}</div>
+      </th>`).join('')}</tr></thead>
+      <tbody>
+        ${section('Gesamt')}
+        ${row('Gesamtwertung', d => d.score, v => Math.round(v), 'high')}
+        ${row('Rang im Team', d => d.rank, v => `${v}.`, 'low')}
+        ${section('Training')}
+        ${row('Trainings besucht', d => d.anwesend, int, 'high')}
+        ${row('Beteiligung', d => d.quote, pct, 'high')}
+        ${row('Letzte 5', d => d.last5, pct, 'high')}
+        ${row('Abgesagt', d => d.abgesagt, int, 'low')}
+        ${row('Unentschuldigt', d => d.unentsch, int, 'low')}
+        ${section('Bewertung')}
+        ${row('Form aktuell', d => d.form, star, 'high')}
+        ${row('Ø Training', d => d.avgT, star, 'high')}
+        ${row('Ø Spiel', d => d.avgS, star, 'high')}
+        ${row('Bewertungen', d => d.ratings, int, null)}
+        ${section('Spiele')}
+        ${row('Im Kader', d => d.kader, int, 'high')}
+        ${row('Startelf', d => d.startelf, int, 'high')}
+        ${row('Startelf-Quote', d => d.startQuote, pct, 'high')}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted small-note">Grün = bester Wert im Vergleich. Gesamtwertung wie bei der Empfohlenen Aufstellung (Bewertung 40 %, Anzahl Trainings 40 %, Beteiligung 20 %).</p>
+
+  <div class="card">
+    <div class="card-title">Bewertungsverlauf</div>
+    <div class="chart-legend chart-legend--row cmp-legend">${players.map((p, i) => `<div class="legend-item"><span class="legend-dot" style="background:${COMPARE_COLORS[i]}"></span>${esc(p.name)}</div>`).join('')}</div>
+    ${compareRatingSVG(players, datas)}
+    <p class="muted small-note">Letzte 10 Bewertungen je Spieler · größere Punkte = Spiel.</p>
+  </div>`;
+
+  return `
+  ${header('Spieler vergleichen')}
+  <main class="content">
+    <div class="section-head"><span>Spieler wählen (${players.length}/3)</span>${players.length ? '<button class="link-btn" data-action="compareClear">Zurücksetzen</button>' : ''}</div>
+    <div class="chip-list cmp-picks">
+      ${pickList.map(p => {
+        const i = ids.indexOf(p.id);
+        return `<button class="chip cmp-chip ${i > -1 ? 'is-on' : ''}" ${i > -1 ? `style="background:${COMPARE_COLORS[i]};border-color:${COMPARE_COLORS[i]}"` : ''} data-action="compareToggle" data-player="${p.id}">${esc(p.name)} <span class="cmp-chip-pos">${p.posPrimary}</span></button>`;
+      }).join('')}
+    </div>
+    ${players.length < 2 ? `<p class="muted team-hint">${players.length === 0 ? '2 oder 3 Spieler antippen, um sie zu vergleichen.' : 'Noch mindestens einen weiteren Spieler antippen.'}</p>` : ''}
+    ${table}
   </main>
   ${tabbar()}`;
 }
@@ -3508,6 +3640,22 @@ function handleAction(btn, e) {
     const t = DB.trainings.find(x => x.id === id);
     Object.keys(t.attendance).forEach(pid => t.attendance[pid] = btn.dataset.status);
     saveDB(); render();
+  }
+  else if (action === 'openCompare') {
+    if (btn.dataset.player) state.compareIds = [btn.dataset.player];
+    nav('comparePlayers');
+  }
+  else if (action === 'compareToggle') {
+    const pid = btn.dataset.player;
+    const i = state.compareIds.indexOf(pid);
+    if (i > -1) state.compareIds.splice(i, 1);
+    else if (state.compareIds.length >= 3) { toast('Maximal 3 Spieler – erst einen abwählen'); return; }
+    else state.compareIds.push(pid);
+    render();
+  }
+  else if (action === 'compareClear') {
+    state.compareIds = [];
+    render();
   }
   else if (action === 'syncSchedule') {
     syncSchedule();
