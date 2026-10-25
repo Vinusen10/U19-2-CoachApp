@@ -688,8 +688,14 @@ function trainingHistorySVG(list, playerId, width, height) {
 // Ein Spieltag zählt erst in der Statistik, wenn der Trainer ihn manuell als
 // abgeschlossen markiert hat (Kader/Startelf final) - sonst würden geplante,
 // aber noch nicht gespielte Spieltage die Einsatzstatistik verfälschen.
+// Ein Spiel gilt automatisch als abgeschlossen, sobald sein Datum vorbei ist (ab dem
+// Folgetag), es einen Kader hat und nicht abgesetzt wurde. Kein Haken mehr nötig.
+function isMatchCompleted(m) {
+  return !m.cancelled && m.date < todayISO() && (m.kader || []).length > 0;
+}
+
 function matchStats(playerId) {
-  const completed = DB.matches.filter(m => m.completed);
+  const completed = DB.matches.filter(isMatchCompleted);
   let imKader = 0, startelf = 0, nichtImKader = 0;
   completed.forEach(m => {
     if ((m.kader || []).includes(playerId)) {
@@ -1837,7 +1843,7 @@ function relDayLabel(iso) {
 function renderTodayCards() {
   const today = todayISO();
   const nextTraining = DB.trainings.filter(t => t.date >= today).sort((a,b) => a.date < b.date ? -1 : 1)[0];
-  const nextMatch = DB.matches.filter(m => m.date >= today && !m.completed).sort((a,b) => a.date < b.date ? -1 : 1)[0];
+  const nextMatch = DB.matches.filter(m => m.date >= today && !m.cancelled).sort((a,b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.time || '') < (b.time || '') ? -1 : 1)[0];
   let html = '';
   if (nextTraining) {
     const vals = relevantAttendance(nextTraining);
@@ -2588,8 +2594,66 @@ function viewNoteForm(id, playerId) {
 
 /* -------------------------------- Spieltag ------------------------------------- */
 
+function daysUntil(iso) {
+  const d = new Date(iso + 'T12:00:00'), t = new Date(todayISO() + 'T12:00:00');
+  return Math.round((d - t) / 86400000);
+}
+function countdownLabel(iso) {
+  const n = daysUntil(iso);
+  return n === 0 ? 'Heute' : n === 1 ? 'Morgen' : `in ${n} Tagen`;
+}
+function sortMatchAsc(a, b) {
+  return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.time || '') < (b.time || '') ? -1 : (a.time || '') > (b.time || '') ? 1 : 0;
+}
+function matchWeekday(iso) { return WEEKDAY_SHORT[new Date(iso + 'T12:00:00').getDay()]; }
+
+function matchRowCard(m, past) {
+  const done = isMatchCompleted(m);
+  let badge = '';
+  if (m.cancelled) badge = '<span class="badge-cancel">Abgesetzt</span>';
+  else if (past && !done) badge = '<span class="badge-open">ohne Kader</span>';
+  const info = matchInfoLine(m);
+  return `
+  <div class="card card-tap match-row ${m.cancelled ? 'match-row--cancelled' : ''}" data-nav="matchDetail" data-params='{"id":"${m.id}"}'>
+    <div class="match-row-date"><span>${matchWeekday(m.date)}</span><b>${fmtDate(m.date).slice(0, 6)}</b></div>
+    <div class="match-row-main">
+      <div class="card-title">vs. ${esc(m.opponent || '–')} ${badge}</div>
+      <div class="card-sub">${esc(info || m.formation)}${past ? ` · Kader ${(m.kader || []).length}` : ''}</div>
+    </div>
+  </div>`;
+}
+
 function viewMatchList() {
-  const list = DB.matches.slice().sort((a,b) => b.date < a.date ? -1 : 1);
+  const today = todayISO();
+  const upcoming = DB.matches.filter(m => m.date >= today).sort(sortMatchAsc);
+  const past = DB.matches.filter(m => m.date < today).sort((a, b) => sortMatchAsc(b, a));
+  const next = upcoming.find(m => !m.cancelled);
+  const rest = upcoming.filter(m => m !== next);
+  // "Danach": die nächsten 2 stattfindenden Spiele (abgesetzte dazwischen werden mit angezeigt, zählen aber nicht)
+  let cut = 0, real = 0;
+  while (cut < rest.length && real < 2) { if (!rest[cut].cancelled) real++; cut++; }
+  const soon = rest.slice(0, cut), later = rest.slice(cut);
+
+  let hero = '';
+  if (next) {
+    const zu = activePlayers().filter(p => (next.availability || {})[p.id] === 'zugesagt').length;
+    const off = activePlayers().filter(p => ((next.availability || {})[p.id] || 'offen') === 'offen').length;
+    const info = matchInfoLine(next);
+    hero = `
+    <div class="section-label">Nächstes Spiel</div>
+    <div class="card card-tap next-match" data-nav="matchDetail" data-params='{"id":"${next.id}"}'>
+      <div class="next-match-top">
+        <span class="next-match-count">${countdownLabel(next.date)}</span>
+        <span class="next-match-date">${matchWeekday(next.date)}, ${fmtDate(next.date)}</span>
+      </div>
+      <div class="next-match-opp">vs. ${esc(next.opponent || '–')}</div>
+      ${info ? `<div class="next-match-info">${esc(info)}</div>` : ''}
+      <div class="next-match-foot">
+        <span>✅ ${zu} zugesagt</span><span>⏳ ${off} offen</span><span>Kader ${(next.kader || []).length}/${next.kaderSize}</span>
+      </div>
+    </div>`;
+  }
+
   return `
   ${header('Spieltag')}
   <main class="content">
@@ -2602,15 +2666,23 @@ function viewMatchList() {
       <span>${DB.settings.scheduleSync && DB.settings.scheduleSync.updatedAt ? `Zuletzt abgerufen: ${fmtDateTimeShort(DB.settings.scheduleSync.updatedAt)}` : (DB.settings.fdProxyUrl ? 'Noch nicht abgerufen' : 'Abruf-Adresse noch nicht eingerichtet')}</span>
       <button class="link-btn" data-action="editProxyUrl">Abruf-Adresse</button>
     </div>
-    <button class="btn btn-primary btn-block" data-action="newMatch">+ Neuer Spieltag</button>
-    <div class="list">
-      ${list.length === 0 ? emptyState('🏟️', 'Noch keine Spieltage angelegt.', '<button class="btn btn-primary" data-action="syncSchedule">Spielplan abrufen</button>') : list.map(m => `
-        <div class="card card-tap" data-nav="matchDetail" data-params='{"id":"${m.id}"}'>
-          <div class="card-title">${fmtDate(m.date)} vs. ${esc(m.opponent || '–')} ${m.cancelled ? '<span class="badge-cancel">Abgesetzt</span>' : !m.completed ? '<span class="badge-open">Offen</span>' : ''}</div>
-          ${matchInfoLine(m) ? `<div class="card-sub">${esc(matchInfoLine(m))}</div>` : ''}
-          <div class="card-sub">${m.formation} · Kader ${((m.kader)||[]).length}/${m.kaderSize}</div>
-        </div>`).join('')}
-    </div>
+
+    ${DB.matches.length === 0 ? emptyState('🏟️', 'Noch keine Spieltage angelegt.', '<button class="btn btn-primary" data-action="syncSchedule">Spielplan abrufen</button>') : ''}
+    ${!next && DB.matches.length ? '<p class="muted team-hint">Kein kommendes Spiel geplant.</p>' : ''}
+    ${hero}
+    ${soon.length ? `<div class="section-label">Danach</div><div class="list match-list">${soon.map(m => matchRowCard(m, false)).join('')}</div>` : ''}
+
+    ${later.length ? `<details class="details-block" data-remember="matchesLater" ${isDetailsOpen('matchesLater', false) ? 'open' : ''}>
+      <summary>Weitere Spiele (${later.length})</summary>
+      <div class="list match-list">${later.map(m => matchRowCard(m, false)).join('')}</div>
+    </details>` : ''}
+
+    ${past.length ? `<details class="details-block" data-remember="matchesPast" ${isDetailsOpen('matchesPast', false) ? 'open' : ''}>
+      <summary>Abgeschlossene Spiele (${past.length})</summary>
+      <div class="list match-list">${past.map(m => matchRowCard(m, true)).join('')}</div>
+    </details>` : ''}
+
+    <button class="btn btn-block" data-action="newMatch">+ Neuer Spieltag</button>
   </main>
   ${tabbar()}`;
 }
@@ -2755,11 +2827,12 @@ function viewMatchDetail(id) {
     </form>
 
     <div class="card completed-card">
-      <label class="checkbox-row">
-        <input type="checkbox" data-action="toggleMatchCompleted" data-id="${m.id}" ${m.completed?'checked':''}>
-        Spieltag abgeschlossen
-      </label>
-      <p class="muted small-note">Erst mit Haken fließt der Spieltag in die Einsatzstatistik der Spieler ein.</p>
+      <div class="card-title">${isMatchCompleted(m) ? '✅ Abgeschlossen' : m.cancelled ? '❌ Abgesetzt' : m.date < todayISO() ? '⚠️ Vorbei, aber ohne Kader' : '📅 Noch nicht gespielt'}</div>
+      <p class="muted small-note">${isMatchCompleted(m)
+        ? 'Zählt in der Einsatzstatistik (Kader, Startelf). Stimmt der Kader nicht, im Reiter „Aufstellung" korrigieren.'
+        : m.cancelled ? 'Abgesetzte Spiele zählen nicht in der Statistik.'
+        : m.date < todayISO() ? 'Zählt erst, wenn ein Kader eingetragen ist – dann wird das Spiel automatisch abgeschlossen.'
+        : 'Ab dem Tag nach dem Spiel wird es automatisch abgeschlossen und zählt in der Einsatzstatistik – vorausgesetzt, der Kader ist eingetragen.'}</p>
     </div>
 
     <button class="btn btn-danger btn-block" data-action="deleteMatch" data-id="${m.id}">Spieltag löschen</button>`;
@@ -3314,15 +3387,6 @@ document.addEventListener('change', (e) => {
       m.formation = e.target.value;
       m.startElf = autoArrangeStartXI(m.kader || [], m.formation).startElf;
       saveDB(); render();
-    }
-  }
-  if (e.target.matches('[data-action="toggleMatchCompleted"]')) {
-    const m = DB.matches.find(x => x.id === e.target.dataset.id);
-    if (m) {
-      m.completed = e.target.checked;
-      saveDB();
-      render();
-      toast(m.completed ? 'Spieltag abgeschlossen – zählt jetzt in der Statistik ✓' : 'Spieltag als offen markiert');
     }
   }
   if (e.target.id === 'trainingPeriodFilter') {

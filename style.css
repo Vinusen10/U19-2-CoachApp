@@ -727,3 +727,21 @@ input, select, textarea { color: var(--text); }
 .cmp-name { font-weight: 800; font-size: var(--fs-sm); line-height: 1.2; margin-top: 2px; }
 .cmp-pos { font-size: 11px; color: var(--muted); font-weight: 700; }
 .cmp-legend { flex-wrap: wrap; margin: 6px 0 4px; }
+
+/* ---------- v41: Spieltag-Übersicht ---------- */
+.section-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 16px 2px 6px; }
+.next-match { border: 2px solid var(--blue); border-left-width: 6px; padding: 14px 16px; }
+.next-match-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.next-match-count { background: var(--blue); color: #fff; font-size: 12px; font-weight: 800; border-radius: 999px; padding: 3px 10px; }
+.next-match-date { font-size: var(--fs-sm); font-weight: 700; color: var(--muted); }
+.next-match-opp { font-size: 21px; font-weight: 800; margin: 8px 0 2px; line-height: 1.2; }
+.next-match-info { font-size: var(--fs-sm); color: var(--muted); font-weight: 600; }
+.next-match-foot { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: var(--fs-sm); font-weight: 700; }
+.match-list { margin-top: 0; gap: 8px; }
+.details-block .match-list { margin-top: 8px; }
+.match-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+.match-row-date { min-width: 50px; text-align: center; background: var(--blue-light); border-radius: 10px; padding: 5px 4px; line-height: 1.15; }
+.match-row-date span { display: block; font-size: 11px; font-weight: 700; color: var(--blue-dark); }
+.match-row-date b { font-size: 14px; color: var(--blue-dark); }
+.match-row-main { min-width: 0; }
+.match-row--cancelled { opacity: .6; }
