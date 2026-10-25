@@ -3276,7 +3276,20 @@ function viewExerciseForm(id) {
   ${tabbar()}`;
 }
 
+function fillAppVersionLabel() {
+  setTimeout(async () => {
+    const el = document.getElementById('appVersionLabel');
+    if (!el) return;
+    try {
+      const keys = window.caches ? await caches.keys() : [];
+      const nums = keys.filter(k => /^u19-trainer-v\d+$/.test(k)).map(k => parseInt(k.replace('u19-trainer-v', ''), 10)).sort((a, b) => a - b);
+      el.textContent = nums.length ? 'v' + nums[0] + (nums.length > 1 ? ` (Update auf v${nums[nums.length - 1]} bereit)` : '') : 'unbekannt';
+    } catch (e) { el.textContent = 'unbekannt'; }
+  }, 0);
+}
+
 function viewBackup() {
+  fillAppVersionLabel();
   const weekdays = DB.settings.trainingWeekdays || [];
   return `
   ${header('Einstellungen')}
@@ -3288,6 +3301,11 @@ function viewBackup() {
         ${WEEKDAYS.map(w => `<button class="weekday-btn ${weekdays.includes(w.val)?'active':''}" data-action="toggleWeekday" data-val="${w.val}">${w.label}</button>`).join('')}
       </div>
       <button class="btn btn-block" data-action="fillTrainings">Fehlende Trainingstage jetzt anlegen</button>
+    </div>
+    <div class="card">
+      <div class="card-title">App-Version</div>
+      <p class="muted">Installiert: <b id="appVersionLabel">wird ermittelt …</b>. Zeigt die App nach einem Update auf GitHub noch die alte Version, hier tippen. Deine Daten bleiben dabei erhalten.</p>
+      <button class="btn btn-block" data-action="forceAppUpdate">🔄 App aktualisieren</button>
     </div>
     <div class="card">
       <div class="card-title">Daten sichern</div>
@@ -4227,6 +4245,9 @@ function handleAction(btn, e) {
     toast(count > 0 ? `${count} Spieltag(e) angelegt ✓` : 'Keine neuen Spieltage (Duplikate übersprungen)');
     nav('matchList');
   }
+  else if (action === 'forceAppUpdate') {
+    forceAppUpdate();
+  }
   else if (action === 'exportBackup') {
     const data = JSON.stringify(DB, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
@@ -4485,21 +4506,46 @@ function showUpdateBanner(reg) {
   });
 }
 
+let swReg = null;
 function registerServiceWorker() {
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').then(reg => {
-        reg.addEventListener('updatefound', () => {
-          const nw = reg.installing;
-          nw.addEventListener('statechange', () => {
-            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-              showUpdateBanner(reg);
-            }
-          });
+  if (!('serviceWorker' in navigator)) return;
+  window.addEventListener('load', () => {
+    // updateViaCache 'none': sw.js nie aus dem Browser-Cache prüfen, sonst sieht
+    // das iPhone neue Versionen erst mit Verzögerung.
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(reg => {
+      swReg = reg;
+      if (reg.waiting && navigator.serviceWorker.controller) showUpdateBanner(reg);
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner(reg);
         });
-      }).catch(err => console.warn('SW-Registrierung fehlgeschlagen', err));
-    });
-  }
+      });
+      reg.update().catch(() => {});
+    }).catch(err => console.warn('SW-Registrierung fehlgeschlagen', err));
+  });
+  // Homescreen-Apps auf dem iPhone werden selten neu gestartet, sondern nur aus dem
+  // Hintergrund geholt – deshalb bei jedem Zurückkehren nach Updates suchen.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && swReg) swReg.update().catch(() => {});
+  });
+}
+
+// Erzwingt die neueste Version: Zwischenspeicher leeren und neu laden.
+// Die Daten (Spieler, Trainings, …) liegen getrennt davon und bleiben erhalten.
+async function forceAppUpdate() {
+  toast('Neueste Version wird geladen …');
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  } catch (e) { /* trotzdem neu laden */ }
+  setTimeout(() => window.location.reload(), 400);
 }
 
 /* ---------------------------------- Init ----------------------------------------- */
