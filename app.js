@@ -555,8 +555,23 @@ function esc(s) {
 // Ein Training zählt erst in der Statistik, wenn für JEDEN Spieler ein echter Status
 // gesetzt wurde (kein "offen" mehr übrig) - verhindert, dass automatisch angelegte,
 // noch nicht stattgefundene Trainings die Trainingsbeteiligung verfälschen.
+// Anwesenheits-Einträge, die zählen: deaktivierte oder gelöschte Spieler, die noch auf
+// "Offen" stehen, werden ignoriert (sonst bliebe ein Training ewig "offen").
+// Haben sie einen echten Status (z. B. anwesend), zählt der weiter für die Statistik.
+function relevantAttendance(t) {
+  const out = [];
+  Object.entries(t.attendance || {}).forEach(([pid, st]) => {
+    const p = playerById(pid);
+    if (st === 'offen' && (!p || !p.active)) return;
+    out.push(st);
+  });
+  return out;
+}
+function openAttendanceCount(t) {
+  return relevantAttendance(t).filter(s => s === 'offen').length;
+}
 function isTrainingComplete(t) {
-  const values = Object.values(t.attendance || {});
+  const values = relevantAttendance(t);
   if (values.length === 0) return false;
   return values.every(s => s !== 'offen');
 }
@@ -1825,7 +1840,7 @@ function renderTodayCards() {
   const nextMatch = DB.matches.filter(m => m.date >= today && !m.completed).sort((a,b) => a.date < b.date ? -1 : 1)[0];
   let html = '';
   if (nextTraining) {
-    const vals = Object.values(nextTraining.attendance || {});
+    const vals = relevantAttendance(nextTraining);
     const offen = vals.filter(v => v === 'offen').length;
     const da = vals.filter(v => v === 'anwesend').length;
     const info = offen === vals.length ? 'Anwesenheit noch nicht erfasst' : (offen ? `${da} anwesend · ${offen} noch offen` : `${da} anwesend – erfasst ✓`);
@@ -1916,7 +1931,7 @@ function viewTrainingList() {
     <div class="list">
       ${list.length === 0 ? (DB.trainings.length ? emptyState('📅', 'Keine Trainings in diesem Zeitraum.') : emptyState('📋', 'Noch keine Trainings angelegt.', '<button class="btn btn-primary" data-action="newTrainingToday">Erstes Training anlegen</button>')) : list.map(t => {
         const counts = { anwesend:0, abgesagt:0, unentschuldigt:0, offen:0 };
-        Object.values(t.attendance).forEach(s => counts[s] = (counts[s]||0)+1);
+        relevantAttendance(t).forEach(s => counts[s] = (counts[s]||0)+1);
         return `
         <div class="card card-tap" data-nav="trainingDetail" data-params='{"id":"${t.id}"}'>
           <div class="card-title">${fmtDate(t.date)} ${counts.offen > 0 ? '<span class="badge-open">Offen</span>' : ''}</div>
@@ -1949,7 +1964,7 @@ function viewTrainingDetail(id) {
     <div class="attend-list">${ratingRowsHTML('training', t, present)}</div>`;
   } else {
     body = `
-    ${!isTrainingComplete(t) ? `<p class="muted small-note">Zählt erst in der Trainingsbeteiligung, sobald jeder Spieler einen Status außer „Offen" hat (noch ${Object.values(t.attendance).filter(s=>s==='offen').length} offen).</p>` : ''}
+    ${!isTrainingComplete(t) ? `<p class="muted small-note">Zählt erst in der Trainingsbeteiligung, sobald jeder Spieler einen Status außer „Offen" hat (noch ${openAttendanceCount(t)} offen).</p>` : ''}
     <div class="attend-list">
       ${players.slice().sort((a,b) => {
         // Offene Rückmeldungen nach oben, erfasste rutschen nach unten
