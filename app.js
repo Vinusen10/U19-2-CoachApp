@@ -341,7 +341,9 @@ function loadDB() {
 
 let DB = loadDB();
 
+let dbRevision = 0; // zählt Änderungen, damit berechnete Ranglisten neu erstellt werden
 function saveDB() {
+  dbRevision++;
   try {
     localStorage.setItem(DB_KEY, JSON.stringify(DB));
   } catch (e) {
@@ -800,16 +802,43 @@ function trainingCountScore(playerId) {
   return Math.min(100, playerStats(playerId).anwesend / max * 100);
 }
 
-// Empfehlungs-Score 0–100 für Kaderauswahl und Empfohlene Aufstellung:
+// Leistungswert 0–100 (nur innerhalb einer Trainings-Stufe entscheidend):
 // Bewertung 40 % + Trainingsbeteiligung (Quote) 20 % + Anzahl besuchter Trainings 40 %.
 // Ohne Bewertung zählt der Spieler als 3 Sterne (neutral).
-function recommendationScore(playerId) {
+function performanceScore(playerId) {
   const r = ratingScore100(playerId);
   const ratingPart = r != null ? r : 50;
   const s = playerStats(playerId);
   let quotePart = 50;
   if (s.total > 0) quotePart = (s.total >= 5 && s.last5Quote != null) ? (s.quote + s.last5Quote) / 2 : s.quote;
   return ratingPart * 0.4 + quotePart * 0.2 + trainingCountScore(playerId) * 0.4;
+}
+// Rangfolge nach Stufen: Spieler, die höchstens TRAINING_TIER_RANGE Trainings hinter dem
+// Ersten ihrer Stufe liegen, gelten als gleich fleißig – dort entscheidet der Leistungswert.
+// Wer mehr Trainings Vorsprung hat, steht immer davor.
+const TRAINING_TIER_RANGE = 3;
+let rankingCache = { rev: -1, day: '', list: [], byId: {} };
+function teamRanking() {
+  const day = todayISO();
+  if (rankingCache.rev === dbRevision && rankingCache.day === day) return rankingCache;
+  const rows = activePlayers().map(p => ({ id: p.id, name: p.name, trainings: playerStats(p.id).anwesend, perf: performanceScore(p.id) }))
+    .sort((a, b) => b.trainings - a.trainings || b.perf - a.perf);
+  let tier = 0, leader = null;
+  rows.forEach(r => {
+    if (leader == null) leader = r.trainings;
+    else if (leader - r.trainings > TRAINING_TIER_RANGE) { tier++; leader = r.trainings; }
+    r.tier = tier;
+  });
+  rows.sort((a, b) => a.tier - b.tier || b.perf - a.perf || b.trainings - a.trainings || a.name.localeCompare(b.name, 'de'));
+  const n = rows.length, byId = {};
+  rows.forEach((r, i) => { r.rank = i + 1; r.score = n > 1 ? 100 * (n - 1 - i) / (n - 1) : 100; byId[r.id] = r; });
+  rankingCache = { rev: dbRevision, day, list: rows, byId };
+  return rankingCache;
+}
+// Gesamtwertung 0–100 aus der Rangfolge (1. = 100, Letzter = 0) – wird überall zum Sortieren genutzt.
+function recommendationScore(playerId) {
+  const r = teamRanking().byId[playerId];
+  return r ? r.score : performanceScore(playerId) * 0.5;
 }
 function fitFactor(sc) { return sc >= 3 ? 1 : sc >= 2 ? 0.85 : sc >= 1.5 ? 0.7 : sc >= 1 ? 0.6 : 0; }
 
@@ -2905,7 +2934,7 @@ function renderRecAltPanel(rec, slot, current) {
         </div>
         <div class="rec-alt-meta">${recMetaHTML(x.p.id)}${x.where ? `<span class="rec-tag ${x.where === 'Bank' ? 'rec-tag-bench' : ''}">${x.where}</span>` : ''}</div>
       </div>`).join('') : '<p class="muted">Kein anderer Spieler passt auf diese Position.</p>'}
-    <p class="muted small-note">Erst passende Positionen, dann „passt bedingt“ – jeweils nach Gesamtwertung (Bewertung 40 %, Anzahl Trainings 40 %, Beteiligung 20 %). Antippen öffnet das Spielerprofil.</p>
+    <p class="muted small-note">Erst passende Positionen, dann „passt bedingt“ – jeweils nach Gesamtwertung (erst Trainings-Stufe, dann Bewertung & Beteiligung). Antippen öffnet das Spielerprofil.</p>
   </div>`;
 }
 
@@ -2942,7 +2971,7 @@ function viewRecommendedLineup() {
   return `
   ${header('Empfohlene Aufstellung')}
   <main class="content">
-    <p class="muted small-note">Unabhängig von den Zusagen – nach deinen Bewertungen (40 %), der Anzahl besuchter Trainings (40 %) und der Trainingsbeteiligung (20 %). Neue Spieler mit wenigen Einheiten rutschen dadurch nicht sofort nach oben. Aktualisiert sich automatisch nach jeder Bewertung.${lrd ? ` Letzte Bewertung: ${fmtDate(lrd)}.` : ' Noch keine Bewertungen – aktuell zählt nur die Trainingsbeteiligung.'}</p>
+    <p class="muted small-note">Unabhängig von den Zusagen – zuerst nach der Anzahl besuchter Trainings: Wer mehr als ${TRAINING_TIER_RANGE} Trainings mehr hat, steht immer weiter vorne. Bei bis zu ${TRAINING_TIER_RANGE} Trainings Unterschied entscheiden deine Bewertungen und die Beteiligung. Aktualisiert sich automatisch nach jeder Bewertung.${lrd ? ` Letzte Bewertung: ${fmtDate(lrd)}.` : ' Noch keine Bewertungen – aktuell zählt nur die Trainingsbeteiligung.'}</p>
     <div class="select-row">
       <label>Formation</label>
       <select data-action="setRecFormation">${FORMATION_NAMES.map(f => `<option value="${f}" ${f===fKey?'selected':''}>${f}</option>`).join('')}</select>
@@ -3081,7 +3110,7 @@ function viewComparePlayers() {
       </tbody>
     </table>
   </div>
-  <p class="muted small-note">Grün = bester Wert im Vergleich. Gesamtwertung wie bei der Empfohlenen Aufstellung (Bewertung 40 %, Anzahl Trainings 40 %, Beteiligung 20 %).</p>
+  <p class="muted small-note">Grün = bester Wert im Vergleich. Gesamtwertung wie bei der Empfohlenen Aufstellung (erst Trainings-Stufe, dann Bewertung & Beteiligung).</p>
 
   <div class="card">
     <div class="card-title">Bewertungsverlauf</div>
